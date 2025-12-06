@@ -11,6 +11,9 @@ TRIAL_PERIOD_DAYS = int(os.getenv("TRIAL_PERIOD_DAYS", 1))
 
 
 # Register user
+# routers/auth.py
+
+# Register user
 @router.post("/register")
 def register_user(user_id: int, username: str = None, first_name: str = None, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.tg_id == user_id).first()
@@ -20,7 +23,6 @@ def register_user(user_id: int, username: str = None, first_name: str = None, db
             tg_id=user_id,
             username=username,
             first_name=first_name,
-            registered_at=datetime.utcnow()
         )
         db.add(user)
         db.commit()
