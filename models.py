@@ -3,9 +3,6 @@ from sqlalchemy.orm import relationship
 from database import Base  # ← ИМПОРТ ИЗ database.py, НЕ создавай новый!
 from datetime import datetime
 
-# УДАЛИ ЭТУ СТРОКУ:
-# Base = declarative_base()
-
 # 1. ДОБАВЛЯЕМ BigInteger В ИМПОРТЫ
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, BigInteger
 from sqlalchemy.orm import relationship
@@ -71,3 +68,4 @@ class Analysis(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="analyses")
+
