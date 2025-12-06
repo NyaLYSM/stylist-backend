@@ -2,9 +2,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import Base, engine
 from routers import auth, wardrobe, looks, profile
+from models import Base
+from database import engine
 
-# Create DB tables if they do not exist
 Base.metadata.create_all(bind=engine)
+
 
 app = FastAPI(title="Stylist Backend API")
 
@@ -31,3 +33,4 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
