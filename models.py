@@ -20,9 +20,11 @@ class User(Base):
     
     username = Column(String, nullable=True)
     first_name = Column(String, nullable=True)
-
-
+    
+    registered_at = Column(DateTime, default=datetime.utcnow) 
+    
     subscription_type = Column(String, default="free")
+
     subscription_until = Column(DateTime, nullable=True)
     trial_used = Column(Integer, default=0)
 
