@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
-from models import User, WardrobeItem, Look, Analysis
+from models import Base, User, WardrobeItem, Look, Analysis
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -188,3 +188,4 @@ class Database:
 
 # global instance
 db = Database()
+
