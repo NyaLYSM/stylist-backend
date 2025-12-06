@@ -5,7 +5,15 @@ from routers import auth, wardrobe, looks, profile
 from models import Base
 from database import engine
 
+from models import User, WardrobeItem, Look, Analysis
+
+# ТОЛЬКО ДЛЯ ИСПРАВЛЕНИЯ - УДАЛИ ПОСЛЕ!
+print("🔄 Recreating tables...")
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)
+print("✅ Tables recreated!")
+
+# Остальной код main.py...
 
 
 app = FastAPI(title="Stylist Backend API")
@@ -33,3 +41,4 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
