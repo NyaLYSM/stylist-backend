@@ -6,14 +6,21 @@ from datetime import datetime
 # УДАЛИ ЭТУ СТРОКУ:
 # Base = declarative_base()
 
+# 1. ДОБАВЛЯЕМ BigInteger В ИМПОРТЫ
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, BigInteger
+from sqlalchemy.orm import relationship
+from database import Base
+from datetime import datetime
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    tg_id = Column(Integer, unique=True, index=True, nullable=False)  # ← user_id → tg_id
+    tg_id = Column(BigInteger, unique=True, index=True, nullable=False) 
+    
     username = Column(String, nullable=True)
     first_name = Column(String, nullable=True)
-    registered_at = Column(DateTime, default=datetime.utcnow)
+
 
     subscription_type = Column(String, default="free")
     subscription_until = Column(DateTime, nullable=True)
