@@ -4,8 +4,10 @@ from database import Base, engine
 from routers import auth, wardrobe, looks, profile
 from models import Base
 from database import engine
+from routers import auth, wardrobe, looks, profile
+from routers import importer   # <— добавь это
 
-
+app.include_router(importer.router)
 
 Base.metadata.create_all(bind=engine)
 
