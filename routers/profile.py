@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, WardrobeItem, Look, Analysis
+from models import User, WardrobeItem, Look
 from datetime import datetime
 
 router = APIRouter()
@@ -84,3 +84,4 @@ def get_user_stats(user_id: int, db: Session = Depends(get_db)):
         "subscription_type": user.subscription_type,
         "premium_active": bool(user.subscription_until and user.subscription_until > datetime.utcnow())
     }
+
