@@ -29,7 +29,6 @@ def register_user(user_id: int, username: str = None, first_name: str = None, db
         db.refresh(user)
 
     return {"success": True, "user": {
-        "id": user.id,
         "tg_id": user.tg_id,
         "subscription_type": user.subscription_type,
         "trial_used": user.trial_used,
