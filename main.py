@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import Base, engine
 from routers import auth, wardrobe, looks, profile, import_router
 
+import models
+
 # Create DB tables
 Base.metadata.create_all(bind=engine)
 
@@ -34,3 +36,4 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
