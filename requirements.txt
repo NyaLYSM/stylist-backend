@@ -1,5 +1,4 @@
 fastapi
-uvicorn[standard]
 sqlalchemy
 psycopg2-binary
 python-dotenv
@@ -10,3 +9,5 @@ Pillow
 onnxruntime
 numpy
 requests
+beautifulsoup4
+uvicorn
