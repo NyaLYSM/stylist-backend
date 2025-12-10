@@ -5,7 +5,14 @@ from database import Base, engine
 from routers import auth, wardrobe, looks, profile, import_router
 
 import models
+import os
+from fastapi.staticfiles import StaticFiles
 
+# создаём папку static/images если нет
+os.makedirs("static/images", exist_ok=True)
+
+# затем после создания app:
+app.mount("/static", StaticFiles(directory="static"), name="static")
 # ========================================
 # АВТОМАТИЧЕСКАЯ ИНИЦИАЛИЗАЦИЯ БД
 # ========================================
