@@ -1,18 +1,39 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from database import Base, engine
 from routers import auth, wardrobe, looks, profile, import_router
 
 import models
 import os
-from fastapi.staticfiles import StaticFiles
 
+# ========================================
+# FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
+# ========================================
+
+# 1. Сначала инициализируем приложение
+app = FastAPI(
+    title="Stylist Backend API",
+    description="Backend для AI Стилист телеграм бота",
+    version="1.0.0"
+)
+
+# 2. Затем используем app, например, для подключения статики
 # создаём папку static/images если нет
 os.makedirs("static/images", exist_ok=True)
-
-# затем после создания app:
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# CORS - разрешаем все источники для WebApp
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 # ========================================
 # АВТОМАТИЧЕСКАЯ ИНИЦИАЛИЗАЦИЯ БД
 # ========================================
@@ -45,22 +66,8 @@ except Exception as e:
     Base.metadata.create_all(bind=engine)
 
 # ========================================
-# FASTAPI APP
+# ПОДКЛЮЧЕНИЕ РОУТЕРОВ И ЭНДПОИНТОВ
 # ========================================
-app = FastAPI(
-    title="Stylist Backend API",
-    description="Backend для AI Стилист телеграм бота",
-    version="1.0.0"
-)
-
-# CORS - разрешаем все источники для WebApp
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Подключаем роутеры
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
