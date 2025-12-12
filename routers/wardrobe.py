@@ -1,5 +1,6 @@
 # routers/wardrobe.py
 import io
+# ДОБАВЛЕНО filetype
 import filetype
 import requests
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
@@ -8,7 +9,9 @@ from database import get_db
 from models import WardrobeItem, User
 from typing import Optional
 from datetime import datetime
-from backend.utils.clip_utils import load_image, clip_is_clothing, clip_match_title
+
+# ИСПРАВЛЕННЫЙ ИМПОРТ: utils.clip_utils, а не backend.utils.clip_utils
+from utils.clip_utils import load_image, clip_is_clothing, clip_match_title
 from fastapi import HTTPException
 
 router = APIRouter()
@@ -74,14 +77,10 @@ def fetch_image_bytes(url: str) -> bytes:
 
 def detect_image_type(b: bytes) -> Optional[str]:
     """
-    Определяет тип файла (расширение) по байтам.
-    Заменено imghdr (удален в Python 3.13) на filetype.
+    ИСПРАВЛЕНО: Замена устаревшего imghdr на filetype.
     """
-    # Используем filetype для определения типа по байтам
     kind = filetype.guess(b)
     if kind:
-        # filetype возвращает 'image/jpeg', 'image/png' и т.д.
-        # для обратной совместимости вернем только расширение (без точки)
         return kind.extension
     return None
 
