@@ -22,6 +22,7 @@ onnxruntime
 # for CLI HTTP requests
 requests
 open-clip-torch
+clip
 
 # optional S3
 boto3
