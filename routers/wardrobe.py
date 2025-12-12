@@ -8,7 +8,7 @@ from database import get_db
 from models import WardrobeItem, User
 from typing import Optional
 from datetime import datetime
-from clip_utils import load_image, clip_is_clothing, clip_match_title
+from backend.utils.clip_utils import load_image, clip_is_clothing, clip_match_title
 from fastapi import HTTPException
 
 router = APIRouter()
