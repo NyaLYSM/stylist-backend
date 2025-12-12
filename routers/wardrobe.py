@@ -1,6 +1,6 @@
 # routers/wardrobe.py
 import io
-import imghdr
+import filetype
 import requests
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
 from sqlalchemy.orm import Session
@@ -73,8 +73,17 @@ def fetch_image_bytes(url: str) -> bytes:
     return buf.getvalue()
 
 def detect_image_type(b: bytes) -> Optional[str]:
-    t = imghdr.what(None, h=b)
-    return t  # e.g. 'jpeg', 'png', etc.
+    """
+    Определяет тип файла (расширение) по байтам.
+    Заменено imghdr (удален в Python 3.13) на filetype.
+    """
+    # Используем filetype для определения типа по байтам
+    kind = filetype.guess(b)
+    if kind:
+        # filetype возвращает 'image/jpeg', 'image/png' и т.д.
+        # для обратной совместимости вернем только расширение (без точки)
+        return kind.extension
+    return None
 
 # ---------- List ----------
 @router.get("/list")
