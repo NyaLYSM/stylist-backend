@@ -1,14 +1,34 @@
 fastapi
+uvicorn
 sqlalchemy
 psycopg2-binary
 python-dotenv
 pydantic
-rembg
-opencv-python-headless
+
+# image processing / bg removal & helpers
 Pillow
-onnxruntime
+opencv-python-headless
+
+# rembg (optional, heavy)
+rembg
+pymatting
+scikit-image
 numpy
+
+# ONNX runtime
+onnxruntime
+
+# for CLI HTTP requests
 requests
-beautifulsoup4
-uvicorn
+
+# optional S3
+boto3
+
+# optional tokenizer / export for CLIP export
+torch
+transformers
+open-clip-torch
+
+# utilities
+tqdm
 python-multipart
