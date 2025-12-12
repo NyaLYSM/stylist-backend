@@ -1,192 +1,170 @@
 # routers/wardrobe.py
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+import io
+import imghdr
+import requests
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
 from sqlalchemy.orm import Session
 from database import get_db
 from models import WardrobeItem, User
-from utils.telegraph import upload_bytes_to_telegraph
-import requests
 from typing import Optional
+from datetime import datetime
 
 router = APIRouter()
 
+# Limits
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+ALLOWED_MIMES = ("image/jpeg", "image/png", "image/webp", "image/avif")
+ALLOWED_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
-# ---- Tiny name moderation/validation ----
-CLOTHING_KEYWORDS = {
-    "футболка","рубашка","худи","толстовка","свитшот","пальто","куртка","верхняя одежда",
-    "брюки","джинсы","шорты","юбка","платье","топ","майка","рубаха","пиджак",
-    "кеды","кроссовки","ботинки","туфли","сандалии","сланцы","сапоги",
-    "пояс","шапка","шарф","перчатки","носок","колготки"
-    # Добавь сюда свои слова — коллекция расширяема
+# Простая валидация названий (белый список категорий + черный список слов)
+WHITELIST_KEYWORDS = {
+    "футболка","рубашка","платье","джинсы","куртка","пальто","кофта","кардиган",
+    "свитер","штаны","шорты","юбка","блузка","костюм","пиджак","кроссовки",
+    "ботинки","туфли","сандалии","сумка","рюкзак","шапка","палки","палантин",
+    "толстовка","боди","топ","жилет","поло","пижама","нижнее белье","трусики",
+    "майка","плащ"
 }
+BLACKLIST_WORDS = {"нелегальн","запрет","porn","sex","нелегаль"}
 
-def validate_name(name: str) -> bool:
-    n = name.strip().lower()
-    if len(n) < 2 or len(n) > 120:
-        return False
-    # простая проверка: присутствует хотя бы одно ключевое слово одежды
-    for kw in CLOTHING_KEYWORDS:
-        if kw in n:
-            return True
-    # если не найдено ключевых слов — отвергнем, т.к. вероятно не одежда
-    return False
-
-
-# ----- Helpers -----
-def _download_image(url: str, max_bytes: int = 5 * 1024 * 1024) -> bytes:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; StylistBot/1.0)"
-    }
-    with requests.get(url, stream=True, timeout=12, headers=headers) as r:
+def upload_to_telegraph(img_bytes: bytes, filename: str) -> str:
+    files = {"file": (filename, img_bytes)}
+    try:
+        r = requests.post("https://telegra.ph/upload", files=files, timeout=30)
         r.raise_for_status()
-        content_type = r.headers.get("Content-Type", "")
-        if not content_type.startswith("image/"):
-            raise ValueError("URL не указывает на изображение")
-        total = 0
-        chunks = []
-        for chunk in r.iter_content(chunk_size=8192):
-            if chunk:
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError("Размер изображения превышает 5 МБ")
-                chunks.append(chunk)
-        return b"".join(chunks)
+        data = r.json()
+        if not isinstance(data, list) or "src" not in data[0]:
+            raise RuntimeError("Bad response from telegra.ph")
+        return "https://telegra.ph" + data[0]["src"]
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Telegraph upload failed: {e}")
 
+def validate_name(name: str):
+    if not name:
+        raise HTTPException(400, "Название не может быть пустым")
+    n = name.lower()
+    if any(b in n for b in BLACKLIST_WORDS):
+        raise HTTPException(400, "Название содержит недопустимые слова")
+    # по возможности — проверить наличие хотя бы одного слова из белого списка
+    if not any(k in n for k in WHITELIST_KEYWORDS):
+        # не критично — можно разрешить, но лучше предупредить; тут — просто запретим слишком абстрактные
+        if len(n) < 3 or len(n.split()) > 6:
+            raise HTTPException(400, "Название выглядит некорректно — укажите тип вещи (например: 'Белая футболка')")
 
-# ---------------------------
-# 1) Add from URL (JSON body)
-# ---------------------------
-@router.post("/add_from_url")
-def add_from_url(payload: dict, db: Session = Depends(get_db)):
+def fetch_image_bytes(url: str) -> bytes:
+    headers = {"User-Agent": "Mozilla/5.0 (compatible)"}
+    try:
+        r = requests.get(url, timeout=15, headers=headers, stream=True)
+        r.raise_for_status()
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось скачать изображение: {e}")
+
+    # Read with limit
+    buf = io.BytesIO()
+    total = 0
+    for chunk in r.iter_content(8192):
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(400, "Файл слишком большой (более 5 МБ)")
+        buf.write(chunk)
+    return buf.getvalue()
+
+def detect_image_type(b: bytes) -> Optional[str]:
+    t = imghdr.what(None, h=b)
+    return t  # e.g. 'jpeg', 'png', etc.
+
+# ---------- List ----------
+@router.get("/list")
+def wardrobe_list(user_id: int, db: Session = Depends(get_db)):
+    items = db.query(WardrobeItem).filter_by(user_id=user_id).order_by(WardrobeItem.id.desc()).all()
+    return {"items": items}
+
+# ---------- Add (JSON) ----------
+@router.post("/add")
+def add_item(payload: dict, db: Session = Depends(get_db)):
     """
-    payload: { user_id: int, name: str, url: str }
+    payload: { user_id, name, image_url, item_type }
+    If image_url points to external host (not telegra.ph) backend will fetch and reupload to Telegraph.
     """
     user_id = payload.get("user_id")
-    name = (payload.get("name") or "").strip()
-    url = payload.get("url") or ""
+    name = payload.get("name", "").strip()
+    image_url = payload.get("image_url", "").strip()
+    item_type = payload.get("item_type", "unknown")
 
-    if not user_id or not name or not url:
-        raise HTTPException(status_code=400, detail="user_id, name, url required")
+    if not user_id or not name or not image_url:
+        raise HTTPException(400, "Нужны user_id, name и image_url")
 
-    # name validation
-    if not validate_name(name):
-        raise HTTPException(status_code=400, detail="Название выглядит не как одежда, уточните (пример: 'Белая футболка')")
+    validate_name(name)
 
-    # Try to download image
-    try:
-        img_bytes = _download_image(url)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Не удалось загрузить изображение: {str(e)}")
-
-    # Upload to Telegraph
-    ok, res = upload_bytes_to_telegraph(img_bytes, "imported.jpg")
-    if not ok:
-        raise HTTPException(status_code=500, detail=f"Ошибка при загрузке изображения: {res}")
-
-    image_url = res
-
-    # Persist: ensure user exists (create if not)
-    user = db.query(User).filter(User.tg_id == user_id).first()
-    if not user:
-        # create minimal user row
-        user = User(tg_id=user_id)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    # If image is already telegraph, keep it
+    if image_url.startswith("https://telegra.ph/") or "telegra.ph/file" in image_url:
+        final_url = image_url
+    else:
+        # try to download image and reupload to Telegraph
+        img_bytes = fetch_image_bytes(image_url)
+        # minimal check
+        img_t = detect_image_type(img_bytes)
+        if not img_t:
+            raise HTTPException(400, "Не удалось распознать формат изображения")
+        fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{img_t}"
+        final_url = upload_to_telegraph(img_bytes, fname)
 
     item = WardrobeItem(
-        user_id=user.tg_id,
+        user_id=user_id,
         name=name,
-        item_type="import",
-        image_url=image_url
+        item_type=item_type,
+        image_url=final_url,
+        created_at=datetime.utcnow()
     )
     db.add(item)
     db.commit()
     db.refresh(item)
+    return {"status": "ok", "item": item}
 
-    return {"success": True, "item": {
-        "id": item.id,
-        "name": item.name,
-        "image_url": item.image_url,
-        "item_type": item.item_type
-    }}
-
-
-# ---------------------------
-# 2) Add from file (form multipart)
-# ---------------------------
-@router.post("/add_from_file")
-def add_from_file(
+# ---------- Upload file (multipart) ----------
+@router.post("/upload")
+def upload_item_file(
     user_id: int = Form(...),
     name: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    """
-    multipart/form-data:
-      - user_id
-      - name
-      - file (image)
-    """
     # Basic checks
-    if not validate_name(name):
-        raise HTTPException(status_code=400, detail="Название выглядит не как одежда, уточните (пример: 'Белая футболка')")
+    if file.content_type not in ALLOWED_MIMES:
+        raise HTTPException(400, "Тип файла не поддерживается")
+    # Read bytes with limit
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "Файл слишком большой (макс 5 МБ)")
+    # detect type
+    img_t = detect_image_type(data)
+    if not img_t:
+        raise HTTPException(400, "Не изображение")
 
-    # limit size to 5MB
-    MAX_BYTES = 5 * 1024 * 1024
-    if file.content_type is None or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Файл должен быть изображением")
+    validate_name(name)
 
-    contents = file.file.read()
-    if not contents:
-        raise HTTPException(status_code=400, detail="Пустой файл")
-    if len(contents) > MAX_BYTES:
-        raise HTTPException(status_code=400, detail="Размер файла превышает 5 МБ")
-
-    # Upload to Telegraph
-    ok, res = upload_bytes_to_telegraph(contents, file.filename or "upload.jpg")
-    if not ok:
-        raise HTTPException(status_code=500, detail=f"Ошибка при загрузке изображения: {res}")
-
-    image_url = res
-
-    # Ensure user exists
-    user = db.query(User).filter(User.tg_id == user_id).first()
-    if not user:
-        user = User(tg_id=user_id)
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    fname = f"{user_id}_{int(datetime.utcnow().timestamp())}_{file.filename}"
+    tele_url = upload_to_telegraph(data, fname)
 
     item = WardrobeItem(
-        user_id=user.tg_id,
+        user_id=user_id,
         name=name,
-        item_type="file",
-        image_url=image_url
+        item_type="upload",
+        image_url=tele_url,
+        created_at=datetime.utcnow()
     )
     db.add(item)
     db.commit()
     db.refresh(item)
+    return {"status": "ok", "item": item}
 
-    return {"success": True, "item": {
-        "id": item.id,
-        "name": item.name,
-        "image_url": item.image_url,
-        "item_type": item.item_type
-    }}
-
-
-# Keep existing simple list method (compatibility)
-@router.get("/list")
-def wardrobe_list(user_id: int, db: Session = Depends(get_db)):
-    items = db.query(WardrobeItem).filter_by(user_id=user_id).order_by(WardrobeItem.id.desc()).all()
-    # SQLAlchemy objects are returned; convert to simple dicts
-    out = []
-    for it in items:
-        out.append({
-            "id": it.id,
-            "name": it.name,
-            "item_type": it.item_type,
-            "image_url": it.image_url,
-            "created_at": it.created_at.isoformat() if it.created_at else None
-        })
-    return {"items": out}
+# ---------- Delete ----------
+@router.delete("/{item_id}")
+def delete_item(item_id: int, user_id: int, db: Session = Depends(get_db)):
+    item = db.query(WardrobeItem).filter_by(id=item_id, user_id=user_id).first()
+    if not item:
+        raise HTTPException(404, "Вещь не найдена")
+    db.delete(item)
+    db.commit()
+    return {"status": "ok", "deleted_id": item_id}
