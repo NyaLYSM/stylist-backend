@@ -4,6 +4,7 @@ sqlalchemy
 psycopg2-binary
 python-dotenv
 pydantic
+filetype
 
 # image processing / bg removal & helpers
 Pillow
