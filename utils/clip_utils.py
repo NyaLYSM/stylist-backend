@@ -1,14 +1,18 @@
 import torch
-import clip
+import open_clip 
 from PIL import Image
-import requests
-from io import BytesIO
+from typing import Optional, Tuple
 
-# Загружаем модель один раз
 device = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL, PREPROCESS = clip.load("ViT-B/32", device=device)
 
-# Белый список типов
+MODEL, PREPROCESS = open_clip.create_model_and_transforms(
+    model_name="ViT-B-32",          # Модель ViT-B/32 в нотации open_clip
+    pretrained='openai',            # Используем веса, обученные OpenAI
+    device=device
+)
+
+MODEL.eval()
+
 CLOTHES = [
     "t-shirt", "shirt", "jeans", "shorts", "jacket", "coat", "dress", "skirt",
     "hoodie", "sweatshirt", "sneakers", "boots", "shoes", "polo", "suit",
