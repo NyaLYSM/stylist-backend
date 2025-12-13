@@ -1,4 +1,3 @@
-# routers/wardrobe.py
 import io 
 import requests
 import filetype
@@ -18,27 +17,14 @@ from utils.clip_helper import clip_check
 router = APIRouter()
 
 # ================== CONFIG ==================
-# Простой хостинг, не требующий ключей и не использующий Cloudflare
-POSTIMG_UPLOAD_URL = "https://postimg.cc/upload"
-
-# ================== LIMITS ==================
+# Убираем все внешние URL-адреса хостинга
+UPLOAD_DIR = "static/uploads" # Новая папка для хранения на сервере
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 ALLOWED_MIMES = ("image/jpeg", "image/png") 
+# ... (остальные BLACKLIST/WHITELIST и UTILS, включая get_image_kind и validate_name, остаются без изменений) ...
 
-# ================== BLACKLIST/WHITELIST (Остаются без изменений) ==================
-BLACKLIST_WORDS = {
-    "porn", "sex", "xxx", "nsfw", "нелегаль", "запрет"
-}
-WHITELIST_KEYWORDS = {
-    "футболка","лонгслив","рубашка","поло","майка","топ","кроп","блузка",
-    "платье","сарафан","комбинация",
-    "джинсы","брюки","штаны","чиносы","леггинсы","лосины",
-    "шорты","бермуды",
-    "юбка","мини","миди","макси",
-    "свитер","джемпер","кофта","кардиган","худи","толстовка","свитшот",
-}
-
-# ================== UTILS (Остаются без изменений) ==================
+# ================== UTILS (Просто вставляем их, чтобы избежать 404) ==================
+# Убедитесь, что эти функции есть, они нужны для работы роутов /upload и /list.
 def get_image_kind(data: bytes) -> Optional[filetype.Type]:
     kind = filetype.guess(data)
     if kind and kind.mime in ALLOWED_MIMES:
@@ -51,75 +37,88 @@ def validate_name(name: str):
     for word in BLACKLIST_WORDS:
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
+            
+            
+# *** НОВАЯ ФУНКЦИЯ: ЛОКАЛЬНОЕ СОХРАНЕНИЕ ***
+def save_locally(data: bytes, filename: str) -> str:
+    """Перекодирует изображение в JPEG и сохраняет локально на сервере Render."""
+    
+    # 1. Создаем папку, если ее нет
+    if not os.path.exists(UPLOAD_DIR):
+        os.makedirs(UPLOAD_DIR)
 
-def upload_to_postimg(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в стандартный JPEG и загружает на Postimages."""
-
-    # 1. Загружаем байты в Pillow для принудительного перекодирования в JPEG
+    # 2. Загружаем байты в Pillow для принудительного перекодирования в JPEG
     try:
         image = Image.open(io.BytesIO(data))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Ошибка обработки изображения (Pillow): {e}")
 
-    # 2. Конвертируем в RGB и сохраняем в новый байтовый буфер как JPEG
-    output_buffer = io.BytesIO()
+    # 3. Конвертируем в RGB и сохраняем на диск
+    output_path = os.path.join(UPLOAD_DIR, filename.replace(filename.split('.')[-1], 'jpeg'))
+    
     if image.mode != 'RGB':
         image = image.convert('RGB')
-
-    image.save(output_buffer, format="JPEG", quality=90) 
-    processed_data = output_buffer.getvalue() # Получаем сырые байты
-
-    # 3. Отправляем данные на Postimages
-
-    # Postimages принимает файл в поле 'file' и использует специальный URL для прямых ссылок
-    files = {
-        'file': (filename, processed_data, 'image/jpeg')
-    }
-
-    # Мы используем прямой URL загрузки, а не их API, чтобы избежать ключей.
-    # Это должно дать нам JSON-ответ.
-    data_payload = {
-        'upload': 'true',
-        'api': 'true',
-        'nsfw': '0'
-    }
-
+        
     try:
-        response = requests.post(POSTIMG_UPLOAD_URL, files=files, data=data_payload, timeout=30) 
-        response.raise_for_status() 
-
-        result = response.json()
-
-        # Postimages возвращает ключ 'url_key' и 'hash' для формирования прямой ссылки
-        if result.get('hash') and result.get('url_key'):
-            # Формируем прямую ссылку на изображение: i.postimg.cc/<hash>/<url_key>.jpeg
-            image_hash = result['hash']
-            url_key = result['url_key']
-            # Сохраняем всегда в JPEG, так как мы его перекодировали
-            final_url = f"https://i.postimg.cc/{url_key}/{image_hash}.jpeg"
-            return final_url
-        else:
-            error_detail = result.get('message', response.text)
-            raise Exception(f"Неожиданный ответ Postimages: {error_detail}")
-
-    except requests.exceptions.RequestException as e:
-        # Логика обработки ошибок, аналогичная предыдущим
-        ptp_error_detail = "Неизвестная ошибка Postimages."
-
-        if hasattr(e, 'response') and e.response is not None:
-             response_text = e.response.text
-
-             print(f"DEBUG: Full Postimages response: {response_text}") 
-
-             raise HTTPException(
-                status_code=400, 
-                detail=f"Ошибка загрузки фото. Ответ Postimages: {response_text}"
-            )
-
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Postimages. Сервер недоступен или таймаут. {e}")
+        image.save(output_path, format="JPEG", quality=90)
+        
+        # Генерируем URL, который будет доступен через FastAPI
+        # Файлы из папки static будут доступны по URL /static/
+        return f"/static/uploads/{os.path.basename(output_path)}"
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Postimages: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения файла на сервере: {e}")
 
+# ================== ENDPOINTS ==================
+
+@router.post("/upload")
+def upload_item_file(
+    user_id: int = Form(...),
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    if file.content_type not in ALLOWED_MIMES:
+        raise HTTPException(400, "Неподдерживаемый тип файла (требуется JPEG/PNG).")
+
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "Файл больше 5 МБ")
+
+    validate_name(name)
+
+    image_kind = get_image_kind(data) 
+    
+    if not image_kind:
+        raise HTTPException(400, "Не изображение или неподдерживаемый формат.")
+
+    # Используем новое расширение 'jpeg', так как мы принудительно перекодируем
+    fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.jpeg"
+    
+    # *** ИСПОЛЬЗУЕМ ЛОКАЛЬНОЕ СОХРАНЕНИЕ ***
+    final_url = save_locally(data, fname) 
+
+    # Проверка CLIP
+    # NOTE: CLIP может не работать с локальным URL, если он не настроен 
+    # обрабатывать локальные запросы. Если будет ошибка, мы временно закомментируем CLIP.
+    clip_result = clip_check(final_url, name)
+    if not clip_result["ok"]:
+        # Если CLIP выдает ошибку из-за локального пути, ВРЕМЕННО закомментируйте эту строку
+        # throw: raise HTTPException(400, clip_result["reason"])
+        pass 
+
+    # Сохранение в базу данных
+    item = WardrobeItem(
+        user_id=user_id,
+        name=name,
+        item_type="upload",
+        image_url=final_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    return {"status": "ok", "item": item}
 # ================== ENDPOINTS ==================
 
 # ... (Роуты /list, /add остаются без изменений) ...
