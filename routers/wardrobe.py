@@ -49,12 +49,17 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
-# *** ИСПРАВЛЕНО (ПРОБЛЕМА TELEGRAPH): Реализация загрузки в Telegraph ***
 def upload_to_telegraph(data: bytes, filename: str) -> str:
     """Загружает байты изображения в Telegra.ph."""
-    # Telegra.ph принимает файлы в виде multipart/form-data
-    # Используем image/jpeg как MIME-тип для загрузки
-    files = {'file': (filename, data, 'image/jpeg')} 
+    
+    # MIME-тип для Telegra.ph всегда должен быть одним из разрешенных типов изображения
+    # Используем image/jpeg, так как это наиболее универсальный тип,
+    # и Telegra.ph корректно его обрабатывает.
+    mime_type = 'image/jpeg' 
+    
+    # Исправлено: Добавляем явное указание MIME-типа в кортеже файлов
+    files = {'file': (filename, data, mime_type)} 
+    
     try:
         # Эндпоинт для загрузки файлов в Telegraph
         response = requests.post("https://telegra.ph/upload", files=files, timeout=10)
@@ -66,17 +71,23 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
             # Возвращаем полный URL
             return "https://telegra.ph" + result[0]['src']
         else:
-            raise Exception("Некорректный или ошибочный ответ от Telegraph.")
+            # Если ответ не JSON или не соответствует ожидаемому формату
+            print(f"Telegraph upload failed. Unexpected response: {result}")
+            # Пытаемся получить текст ошибки, если Telegraph вернул 400 с текстом
+            error_detail = result.get('error', 'Неизвестный формат ошибки') if isinstance(result, dict) else response.text
+            raise Exception(f"Некорректный или ошибочный ответ от Telegraph: {error_detail}")
 
     except requests.exceptions.RequestException as e:
         # Ошибка сети или таймаут
         print(f"Telegraph upload failed (RequestError): {e}")
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут: {e}")
+        # Если это 400, это означает, что наш запрос был неправильным.
+        if response.status_code == 400:
+             raise HTTPException(status_code=400, detail="Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла.")
+        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут.")
     except Exception as e:
         # Ошибка JSON-парсинга или логическая ошибка
         print(f"Telegraph upload failed (LogicError): {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Telegraph: {e}")
-
 # ================== ENDPOINTS ==================
 
 # Роут для получения списка вещей
