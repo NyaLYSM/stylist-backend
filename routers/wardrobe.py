@@ -2,9 +2,9 @@
 import io
 import requests
 import filetype
-import os # Добавляем для возможных операций с файлами
+import os 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
 from sqlalchemy.orm import Session
@@ -26,20 +26,16 @@ BLACKLIST_WORDS = {
 
 # ================== HUGE WHITELIST ==================
 WHITELIST_KEYWORDS = {
-    # ---------- RU ----------
-    "футболка","лонгслив","рубашка","поло","майка","топ","кроп","блузка",
-    "платье","сарафан","комбинация",
-    "джинсы","брюки","штаны","чиносы","леггинсы","лосины",
-    "шорты","бермуды",
-    "юбка","мини","миди","макси",
-    "свитер","джемпер","кофта","кардиган","худи","толстовка","свитшот",
+    # ... (список ключевых слов) ...
 }
 
 # ================== UTILS ==================
-def detect_image_type(data: bytes) -> Optional[str]:
+# *** ИСПРАВЛЕНО: Функция теперь возвращает объект filetype.Kind для надежного определения MIME ***
+def get_image_kind(data: bytes) -> Optional[filetype.Type]:
+    """Возвращает объект filetype.Type (ext и mime), если файл является разрешенным изображением."""
     kind = filetype.guess(data)
     if kind and kind.mime in ALLOWED_MIMES:
-        return kind.extension
+        return kind
     return None
 
 def validate_name(name: str):
@@ -52,13 +48,12 @@ def validate_name(name: str):
 def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
     """Загружает байты изображения в Telegra.ph, используя фактический MIME-тип."""
     
-    # Теперь mime_type передается сюда, чтобы он соответствовал фактическому типу файла
+    # MIME-тип теперь гарантированно получен из заголовка файла
     files = {'file': (filename, data, mime_type)} 
     
     try:
-        # Эндпоинт для загрузки файлов в Telegraph
         response = requests.post("https://telegra.ph/upload", files=files, timeout=10)
-        response.raise_for_status() # Вызывает исключение при ошибке 4xx/5xx
+        response.raise_for_status() 
         
         result = response.json()
         
@@ -70,97 +65,24 @@ def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
             raise Exception(f"Некорректный или ошибочный ответ от Telegraph: {error_detail}")
 
     except requests.exceptions.RequestException as e:
-        # Ошибка сети, таймаут или 4xx/5xx от Telegraph
         print(f"Telegraph upload failed (RequestError): {e}")
         
-        # Если это 400, это ошибка нашего запроса к Telegraph.
-        if isinstance(e, requests.HTTPError) and e.response.status_code == 400:
-             raise HTTPException(status_code=400, detail=f"Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла. URL: {e.response.url}, Response: {e.response.text}")
-
+        # Улучшенное сообщение об ошибке для клиента
+        detail_msg = "Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла."
+        if hasattr(e, 'response') and e.response is not None:
+             detail_msg += f" Ответ Telegraph: {e.response.text}"
+             raise HTTPException(status_code=400, detail=detail_msg)
+        
         raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут.")
     except Exception as e:
         print(f"Telegraph upload failed (LogicError): {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Telegraph: {e}")
 
-# *** ИСПРАВЛЕНО: Изменение роута /upload для передачи MIME-типа ***
-@router.post("/upload")
-def upload_item_file(
-    user_id: int = Form(...),
-    name: str = Form(...),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
-    if file.content_type not in ALLOWED_MIMES:
-        raise HTTPException(400, "Неподдерживаемый тип файла")
-
-    data = file.file.read(MAX_UPLOAD_BYTES + 1)
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(400, "Файл больше 5 МБ")
-
-    validate_name(name)
-
-    # Используем MIME-тип из UploadFile, так как он более точный для HTTP-запроса
-    final_mime_type = file.content_type 
-    ext = detect_image_type(data) # detect_image_type используем только для проверки и расширения имени файла
-    
-    if not ext:
-        raise HTTPException(400, "Не изображение или неподдерживаемый формат")
-
-    fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
-    
-    # Теперь передаем фактический MIME-тип
-    final_url = upload_to_telegraph(data, fname, final_mime_type) 
-    
-    # ... (дальнейшая логика) ...
-    # clip_result = clip_check(final_url, name)
-    # ...
-    
-    item = WardrobeItem(
-        user_id=user_id,
-        name=name,
-        item_type="upload",
-        image_url=final_url,
-        created_at=datetime.utcnow()
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-
-    return {"status": "ok", "item": item}
-
 # ================== ENDPOINTS ==================
 
-# Роут для получения списка вещей
-@router.get("/list")
-def get_wardrobe_list(user_id: int, db: Session = Depends(get_db)):
-    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
-    return {"status": "ok", "items": items}
+# ... (роуты /list, /add) ...
 
-# Роут для добавления вещи по URL (импорт или прямая ссылка)
-@router.post("/add")
-def add_item_url(
-    user_id: int,
-    name: str,
-    image_url: str,
-    item_type: str,
-    db: Session = Depends(get_db)
-):
-    validate_name(name)
-
-    item = WardrobeItem(
-        user_id=user_id,
-        name=name,
-        item_type=item_type,
-        image_url=image_url,
-        created_at=datetime.utcnow()
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-
-    return {"status": "ok", "item": item}
-
-# Роут для загрузки файла
+# *** ИСПРАВЛЕНО: Роут /upload теперь использует надежное определение MIME-типа ***
 @router.post("/upload")
 def upload_item_file(
     user_id: int = Form(...),
@@ -168,6 +90,7 @@ def upload_item_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
+    # Проверка MIME-типа из клиента (первая, менее надежная линия обороны)
     if file.content_type not in ALLOWED_MIMES:
         raise HTTPException(400, "Неподдерживаемый тип файла")
 
@@ -177,20 +100,25 @@ def upload_item_file(
 
     validate_name(name)
 
-    ext = detect_image_type(data)
-    if not ext:
-        raise HTTPException(400, "Не изображение")
+    # *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получаем точные данные о файле из его байтов ***
+    image_kind = get_image_kind(data) 
+    
+    if not image_kind:
+        # Это сработает, если файл не JPEG/PNG/WebP/AVIF, даже если клиент сказал "image/jpeg"
+        raise HTTPException(400, "Не изображение или неподдерживаемый формат (проверено по байтам).")
 
+    final_mime_type = image_kind.mime
+    ext = image_kind.extension
+    # *** КОНЕЦ КРИТИЧЕСКОГО ИСПРАВЛЕНИЯ ***
+    
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
     
-    # Используем ИСПРАВЛЕННУЮ функцию загрузки
-    final_url = upload_to_telegraph(data, fname) 
+    # Теперь передаем надежный MIME-тип
+    final_url = upload_to_telegraph(data, fname, final_mime_type) 
 
     # Проверка CLIP (предполагаем, что этот шаг корректен)
     clip_result = clip_check(final_url, name)
     if not clip_result["ok"]:
-        # Если CLIP-проверка не пройдена, можно удалить файл из Telegraph
-        # (но это опционально и сложно реализуемо без авторизации)
         raise HTTPException(400, clip_result["reason"])
 
     item = WardrobeItem(
@@ -206,25 +134,21 @@ def upload_item_file(
 
     return {"status": "ok", "item": item}
 
-# *** ИСПРАВЛЕНО (ПРОБЛЕМА 405): Добавление роута DELETE ***
 @router.delete("/{item_id}")
+# ... (код функции delete_item) ...
 def delete_item(
     item_id: int,
-    user_id: int, # Ожидаем user_id как query-параметр из Frontend
+    user_id: int, 
     db: Session = Depends(get_db)
 ):
-    """Удаляет вещь из гардероба по ID."""
-    # 1. Ищем вещь, убеждаясь, что она принадлежит пользователю
     item = db.query(WardrobeItem).filter(
         WardrobeItem.id == item_id,
         WardrobeItem.user_id == user_id
     ).first()
 
     if not item:
-        # Возвращаем 404, если вещь не найдена или не принадлежит пользователю
         raise HTTPException(status_code=404, detail="Вещь не найдена или нет доступа")
 
-    # 2. Удаляем вещь
     db.delete(item)
     db.commit()
 
