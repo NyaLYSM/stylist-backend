@@ -1,5 +1,5 @@
 # routers/wardrobe.py
-import io # *** НОВЫЙ ИМПОРТ ***
+import io # Оставляем на случай, если где-то используется, но для Telegraph не требуется
 import requests
 import filetype
 import os 
@@ -50,16 +50,19 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
-# *** ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ TELEGRAPH: Используем io.BytesIO для надежной отправки данных ***
+# *** ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ TELEGRAPH: Передача сырых байтов и улучшенное логирование ***
 def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
     """Загружает байты изображения в Telegra.ph, используя фактический MIME-тип."""
     
-    # Оборачиваем байты в буфер, чтобы requests мог правильно обработать multipart/form-data
-    file_buffer = io.BytesIO(data)
-    files = {'file': (filename, file_buffer, mime_type)} 
+    # Отправляем сырые байты. Это самая простая и часто надежная конструкция для requests
+    files = {'file': (filename, data, mime_type)} 
+    
+    # *** Логирование для диагностики (отображается в логах сервера) ***
+    print(f"DEBUG: Attempting Telegraph upload. Filename: {filename}, MIME: {mime_type}, Size: {len(data)} bytes")
     
     try:
-        response = requests.post("https://telegra.ph/upload", files=files, timeout=10)
+        # Увеличим таймаут на всякий случай
+        response = requests.post("https://telegra.ph/upload", files=files, timeout=15) 
         response.raise_for_status() 
         
         result = response.json()
@@ -75,13 +78,16 @@ def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
         print(f"Telegraph upload failed (RequestError): {e}")
         
         detail_msg = "Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла."
+        
         if hasattr(e, 'response') and e.response is not None:
-             # Выводим фактический ответ от Telegraph для лучшей диагностики
-             detail_msg += f" Ответ Telegraph: {e.response.text}"
+             response_text = e.response.text
+             # Логируем полный ответ для пользователя
+             print(f"DEBUG: Full Telegraph response: {response_text}") 
+             detail_msg += f" Ответ Telegraph: {response_text}"
              if e.response.status_code == 400:
                 raise HTTPException(status_code=400, detail=detail_msg)
         
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут.")
+        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут. {e}")
     except Exception as e:
         print(f"Telegraph upload failed (LogicError): {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Telegraph: {e}")
@@ -132,6 +138,7 @@ def upload_item_file(
 
     validate_name(name)
 
+    # Получаем точные данные о файле из его байтов
     image_kind = get_image_kind(data) 
     
     if not image_kind:
