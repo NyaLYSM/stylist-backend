@@ -9,18 +9,23 @@ from typing import Optional, Tuple, Dict, Any
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Form
 from sqlalchemy.orm import Session
-# >>> КРИТИЧЕСКИ ВАЖНЫЕ ИМПОРТЫ
 from PIL import Image 
+
 from database import get_db
 from models import WardrobeItem
 from utils.clip_helper import clip_check 
-# <<< КОНЕЦ ВАЖНЫХ ИМПОРТОВ
 
 router = APIRouter()
 
+# ================== IMAGUR CONFIG ==================
+# Публичный Client ID для анонимной загрузки
+IMGUR_CLIENT_ID = "944dd80d22dc9b4" # Стандартный, несекретный ID для анонимной загрузки
+IMGUR_UPLOAD_URL = "https://api.imgur.com/3/image"
+
 # ================== LIMITS ==================
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
-ALLOWED_MIMES = ("image/jpeg", "image/png", "image/webp", "image/avif") 
+# Оставляем только JPEG и PNG, так как Imgur может перекодировать
+ALLOWED_MIMES = ("image/jpeg", "image/png") 
 
 # ================== BLACKLIST ==================
 BLACKLIST_WORDS = {
@@ -29,7 +34,6 @@ BLACKLIST_WORDS = {
 
 # ================== HUGE WHITELIST ==================
 WHITELIST_KEYWORDS = {
-    # ---------- RU ----------
     "футболка","лонгслив","рубашка","поло","майка","топ","кроп","блузка",
     "платье","сарафан","комбинация",
     "джинсы","брюки","штаны","чиносы","леггинсы","лосины",
@@ -40,7 +44,6 @@ WHITELIST_KEYWORDS = {
 
 # ================== UTILS ==================
 def get_image_kind(data: bytes) -> Optional[filetype.Type]:
-    """Возвращает объект filetype.Type (ext и mime), если файл является разрешенным изображением."""
     kind = filetype.guess(data)
     if kind and kind.mime in ALLOWED_MIMES:
         return kind
@@ -53,13 +56,11 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
-# *** ФУНКЦИЯ ЗАГРУЗКИ: ПЕРЕКОДИРОВАНИЕ + ПЕРЕМОТКА БУФЕРА (.seek(0)) ***
-def upload_to_telegraph(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в стандартный JPEG и загружает в Telegra.ph."""
+# *** НОВАЯ ФУНКЦИЯ: ЗАГРУЗКА НА IMGUR ***
+def upload_to_imgur(data: bytes, filename: str) -> str:
+    """Перекодирует изображение в стандартный JPEG и загружает на Imgur."""
     
-    final_mime_type = 'image/jpeg' 
-    
-    # 1. Загружаем байты в Pillow для принудительного перекодирования
+    # 1. Загружаем байты в Pillow для принудительного перекодирования в JPEG
     try:
         image = Image.open(io.BytesIO(data))
     except Exception as e:
@@ -71,54 +72,61 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
         image = image.convert('RGB')
         
     image.save(output_buffer, format="JPEG", quality=90) 
-    
-    # <<< КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Получаем сырые байты, а не объект буфера
-    processed_data = output_buffer.getvalue()
+    processed_data = output_buffer.getvalue() # Получаем сырые байты
 
-    # 3. Отправляем перекодированные данные в Telegraph
-    # Передаем сырые байты. Это самый надежный способ для requests.
-    files = {'file': (filename, processed_data, final_mime_type)} 
+    # 3. Отправляем данные на Imgur
+    headers = {
+        "Authorization": f"Client-ID {IMGUR_CLIENT_ID}"
+    }
     
+    # Imgur принимает файл как base64 или как multipart/form-data. 
+    # multipart/form-data часто надежнее.
+    files = {
+        'image': ('file', processed_data, 'image/jpeg'),
+        'type': (None, 'file'),
+        'album': (None, 'false'), # Не загружать в альбом
+        'title': (None, filename)
+    }
+
     try:
-        response = requests.post("https://telegra.ph/upload", files=files, timeout=15) 
+        response = requests.post(IMGUR_UPLOAD_URL, files=files, headers=headers, timeout=15) 
         response.raise_for_status() 
         
         result = response.json()
         
-        if result and isinstance(result, list) and result[0].get('src'):
-            return "https://telegra.ph" + result[0]['src']
+        if result.get('success') and result.get('data'):
+            # Ссылка на изображение
+            return result['data']['link']
         else:
-            error_detail = result.get('error', 'Неизвестный формат ответа') if isinstance(result, dict) else response.text
-            raise Exception(f"Некорректный или ошибочный ответ от Telegraph: {error_detail}")
+            # Imgur вернул ошибку, но с кодом 200 (редко, но бывает)
+            error_detail = result.get('data', {}).get('error', 'Неизвестная ошибка Imgur')
+            raise Exception(f"Ошибка Imgur API: {error_detail}")
 
     except requests.exceptions.RequestException as e:
-        telegraph_error_detail = "Неизвестная ошибка Telegraph."
+        imgur_error_detail = "Неизвестная ошибка Imgur."
         
         if hasattr(e, 'response') and e.response is not None:
              response_text = e.response.text
              try:
                  json_data = e.response.json()
-                 if isinstance(json_data, dict):
-                     telegraph_error_detail = json_data.get('error', response_text)
-                 else:
-                     telegraph_error_detail = str(json_data)
+                 # Imgur возвращает { "data": { "error": "..." } } для 400 ошибок
+                 imgur_error_detail = json_data.get('data', {}).get('error', response_text)
              except json.JSONDecodeError:
-                 telegraph_error_detail = response_text
+                 imgur_error_detail = response_text
                  
-             print(f"DEBUG: Full Telegraph response: {telegraph_error_detail}") 
+             print(f"DEBUG: Full Imgur response: {imgur_error_detail}") 
              
-             if e.response.status_code == 400:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Ошибка загрузки фото. Ответ Telegraph: {telegraph_error_detail}"
-                )
+             raise HTTPException(
+                status_code=400, 
+                detail=f"Ошибка загрузки фото. Ответ Imgur: {imgur_error_detail}"
+            )
         
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут. {e}")
+        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Imgur. Сервер недоступен или таймаут. {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Telegraph: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Imgur: {e}")
+
 
 # ================== ENDPOINTS ==================
-# ... (Остальные роуты /list, /add, /upload, /delete без изменений) ...
 
 @router.get("/list")
 def get_wardrobe_list(user_id: int, db: Session = Depends(get_db)):
@@ -155,15 +163,18 @@ def upload_item_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
+    # MIME-проверка
     if file.content_type not in ALLOWED_MIMES:
-        raise HTTPException(400, "Неподдерживаемый тип файла")
+        raise HTTPException(400, "Неподдерживаемый тип файла (Imgur предпочитает JPEG/PNG).")
 
+    # Проверка размера
     data = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, "Файл больше 5 МБ")
 
     validate_name(name)
 
+    # Проверка, что это изображение
     image_kind = get_image_kind(data) 
     
     if not image_kind:
@@ -173,7 +184,8 @@ def upload_item_file(
     
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
     
-    final_url = upload_to_telegraph(data, fname) 
+    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ IMGUR ***
+    final_url = upload_to_imgur(data, fname) 
 
     # Проверка CLIP 
     clip_result = clip_check(final_url, name)
