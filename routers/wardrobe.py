@@ -49,15 +49,10 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
-def upload_to_telegraph(data: bytes, filename: str) -> str:
-    """Загружает байты изображения в Telegra.ph."""
+def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
+    """Загружает байты изображения в Telegra.ph, используя фактический MIME-тип."""
     
-    # MIME-тип для Telegra.ph всегда должен быть одним из разрешенных типов изображения
-    # Используем image/jpeg, так как это наиболее универсальный тип,
-    # и Telegra.ph корректно его обрабатывает.
-    mime_type = 'image/jpeg' 
-    
-    # Исправлено: Добавляем явное указание MIME-типа в кортеже файлов
+    # Теперь mime_type передается сюда, чтобы он соответствовал фактическому типу файла
     files = {'file': (filename, data, mime_type)} 
     
     try:
@@ -66,28 +61,73 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
         response.raise_for_status() # Вызывает исключение при ошибке 4xx/5xx
         
         result = response.json()
-        # Telegraph возвращает список с одним элементом: [{'src': '/file/...'}]
+        
         if result and isinstance(result, list) and result[0].get('src'):
-            # Возвращаем полный URL
             return "https://telegra.ph" + result[0]['src']
         else:
-            # Если ответ не JSON или не соответствует ожидаемому формату
             print(f"Telegraph upload failed. Unexpected response: {result}")
-            # Пытаемся получить текст ошибки, если Telegraph вернул 400 с текстом
             error_detail = result.get('error', 'Неизвестный формат ошибки') if isinstance(result, dict) else response.text
             raise Exception(f"Некорректный или ошибочный ответ от Telegraph: {error_detail}")
 
     except requests.exceptions.RequestException as e:
-        # Ошибка сети или таймаут
+        # Ошибка сети, таймаут или 4xx/5xx от Telegraph
         print(f"Telegraph upload failed (RequestError): {e}")
-        # Если это 400, это означает, что наш запрос был неправильным.
-        if response.status_code == 400:
-             raise HTTPException(status_code=400, detail="Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла.")
+        
+        # Если это 400, это ошибка нашего запроса к Telegraph.
+        if isinstance(e, requests.HTTPError) and e.response.status_code == 400:
+             raise HTTPException(status_code=400, detail=f"Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла. URL: {e.response.url}, Response: {e.response.text}")
+
         raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут.")
     except Exception as e:
-        # Ошибка JSON-парсинга или логическая ошибка
         print(f"Telegraph upload failed (LogicError): {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Telegraph: {e}")
+
+# *** ИСПРАВЛЕНО: Изменение роута /upload для передачи MIME-типа ***
+@router.post("/upload")
+def upload_item_file(
+    user_id: int = Form(...),
+    name: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+    if file.content_type not in ALLOWED_MIMES:
+        raise HTTPException(400, "Неподдерживаемый тип файла")
+
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "Файл больше 5 МБ")
+
+    validate_name(name)
+
+    # Используем MIME-тип из UploadFile, так как он более точный для HTTP-запроса
+    final_mime_type = file.content_type 
+    ext = detect_image_type(data) # detect_image_type используем только для проверки и расширения имени файла
+    
+    if not ext:
+        raise HTTPException(400, "Не изображение или неподдерживаемый формат")
+
+    fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
+    
+    # Теперь передаем фактический MIME-тип
+    final_url = upload_to_telegraph(data, fname, final_mime_type) 
+    
+    # ... (дальнейшая логика) ...
+    # clip_result = clip_check(final_url, name)
+    # ...
+    
+    item = WardrobeItem(
+        user_id=user_id,
+        name=name,
+        item_type="upload",
+        image_url=final_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    return {"status": "ok", "item": item}
+
 # ================== ENDPOINTS ==================
 
 # Роут для получения списка вещей
