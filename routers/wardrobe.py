@@ -20,7 +20,7 @@ router = APIRouter()
 
 # ================== LIMITS ==================
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
-ALLOWED_MIMES = ("image/jpeg", "image/png", "image/webp", "image/avif") # <<< ЗДЕСЬ ОНИ БЫЛИ ОПРЕДЕЛЕНЫ
+ALLOWED_MIMES = ("image/jpeg", "image/png", "image/webp", "image/avif") 
 
 # ================== BLACKLIST ==================
 BLACKLIST_WORDS = {
@@ -53,7 +53,7 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
-# *** ФУНКЦИЯ ЗАГРУЗКИ: ПЕРЕКОДИРОВАНИЕ В СТАНДАРТНЫЙ JPEG ***
+# *** ФУНКЦИЯ ЗАГРУЗКИ: ПЕРЕКОДИРОВАНИЕ + ПЕРЕМОТКА БУФЕРА (.seek(0)) ***
 def upload_to_telegraph(data: bytes, filename: str) -> str:
     """Перекодирует изображение в стандартный JPEG и загружает в Telegra.ph."""
     
@@ -71,10 +71,13 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
         image = image.convert('RGB')
         
     image.save(output_buffer, format="JPEG", quality=90) 
-    processed_data = output_buffer.getvalue()
-
+    
+    # <<< КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПЕРЕМОТАТЬ БУФЕР В НАЧАЛО
+    output_buffer.seek(0)
+    
     # 3. Отправляем перекодированные данные в Telegraph
-    files = {'file': (filename, processed_data, final_mime_type)} 
+    # Передаем буфер напрямую в requests
+    files = {'file': (filename, output_buffer, final_mime_type)} 
     
     try:
         response = requests.post("https://telegra.ph/upload", files=files, timeout=15) 
@@ -116,6 +119,7 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
 
 
 # ================== ENDPOINTS ==================
+# ... (Остальные роуты /list, /add, /upload, /delete без изменений) ...
 
 @router.get("/list")
 def get_wardrobe_list(user_id: int, db: Session = Depends(get_db)):
@@ -152,7 +156,6 @@ def upload_item_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # ПРОВЕРКА: ALLOWED_MIMES теперь гарантированно определен
     if file.content_type not in ALLOWED_MIMES:
         raise HTTPException(400, "Неподдерживаемый тип файла")
 
@@ -171,7 +174,6 @@ def upload_item_file(
     
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
     
-    # MIME-тип больше не нужен, так как upload_to_telegraph жестко перекодирует в JPEG
     final_url = upload_to_telegraph(data, fname) 
 
     # Проверка CLIP 
