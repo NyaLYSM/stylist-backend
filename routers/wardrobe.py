@@ -17,8 +17,9 @@ from utils.clip_helper import clip_check
 
 router = APIRouter()
 
-# ================== VGY.ME CONFIG ==================
-VGY_UPLOAD_URL = "https://vgy.me/upload"
+# ================== PTP.MOE CONFIG ==================
+# Простой хостинг, не требующий ключей и не использующий Cloudflare
+PTP_UPLOAD_URL = "https://ptp.moe/api/upload"
 
 # ================== LIMITS ==================
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -50,10 +51,10 @@ def validate_name(name: str):
     for word in BLACKLIST_WORDS:
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
-        
-# *** НОВАЯ ФУНКЦИЯ: ЗАГРУЗКА НА VGY.ME ***
-def upload_to_vgy(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в стандартный JPEG и загружает на Vgy.me."""
+
+# *** НОВАЯ ФУНКЦИЯ: ЗАГРУЗКА НА PTP.MOE ***
+def upload_to_ptp(data: bytes, filename: str) -> str:
+    """Перекодирует изображение в стандартный JPEG и загружает на ptp.moe."""
     
     # 1. Загружаем байты в Pillow для принудительного перекодирования в JPEG
     try:
@@ -69,52 +70,50 @@ def upload_to_vgy(data: bytes, filename: str) -> str:
     image.save(output_buffer, format="JPEG", quality=90) 
     processed_data = output_buffer.getvalue() # Получаем сырые байты
 
-    # 3. Отправляем данные на Vgy.me
+    # 3. Отправляем данные на PTP.MOE
     
-    # Vgy.me принимает файл в поле 'file' и возвращает JSON с прямой ссылкой
+    # PTP.MOE принимает файл в поле 'file'
     files = {
         'file': (filename, processed_data, 'image/jpeg')
     }
-    data_payload = {
-        'anon': 'true', # Анонимная загрузка
-        'i': '1'       # Индикатор, что мы хотим JSON-ответ
-    }
 
     try:
-        response = requests.post(VGY_UPLOAD_URL, files=files, data=data_payload, timeout=20) 
+        response = requests.post(PTP_UPLOAD_URL, files=files, timeout=20) 
         response.raise_for_status() 
         
+        # PTP.MOE возвращает список, содержащий один объект с прямой ссылкой
         result = response.json()
         
-        # Vgy.me возвращает ключ 'image' с прямой ссылкой
-        if result.get('is_error') == False and result.get('image'):
-            return result['image']
+        if isinstance(result, list) and len(result) > 0 and 'link' in result[0]:
+            # Ссылка хранится в поле 'link'
+            return result[0]['link']
         else:
-            # Vgy.me вернул ошибку, но с кодом 200
-            error_detail = result.get('error', 'Неизвестная ошибка Vgy.me')
-            raise Exception(f"Ошибка Vgy.me API: {error_detail}")
+            # PTP.MOE вернул неожиданный ответ
+            error_detail = response.text
+            raise Exception(f"Неожиданный ответ PTP.MOE: {error_detail}")
 
     except requests.exceptions.RequestException as e:
-        vgy_error_detail = "Неизвестная ошибка Vgy.me."
+        ptp_error_detail = "Неизвестная ошибка PTP.MOE."
         
         if hasattr(e, 'response') and e.response is not None:
              response_text = e.response.text
              try:
+                 # Пытаемся получить JSON-ответ об ошибке
                  json_data = e.response.json()
-                 vgy_error_detail = json_data.get('error', response_text)
+                 ptp_error_detail = json_data.get('error', response_text)
              except json.JSONDecodeError:
-                 vgy_error_detail = response_text
+                 ptp_error_detail = response_text
                  
-             print(f"DEBUG: Full Vgy.me response: {vgy_error_detail}") 
+             print(f"DEBUG: Full PTP.MOE response: {ptp_error_detail}") 
              
              raise HTTPException(
                 status_code=400, 
-                detail=f"Ошибка загрузки фото. Ответ Vgy.me: {vgy_error_detail}"
+                detail=f"Ошибка загрузки фото. Ответ PTP.MOE: {ptp_error_detail}"
             )
         
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Vgy.me. Сервер недоступен или таймаут. {e}")
+        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в PTP.MOE. Сервер недоступен или таймаут. {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Vgy.me: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа PTP.MOE: {e}")
 
 
 # ================== ENDPOINTS ==================
@@ -128,6 +127,7 @@ def upload_item_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
+    # Логика проверки файла и имени остается без изменений
     if file.content_type not in ALLOWED_MIMES:
         raise HTTPException(400, "Неподдерживаемый тип файла (требуется JPEG/PNG).")
 
@@ -146,14 +146,15 @@ def upload_item_file(
     
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
     
-    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ VGY.ME ***
-    final_url = upload_to_vgy(data, fname) 
+    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ PTP.MOE ***
+    final_url = upload_to_ptp(data, fname) 
 
     # Проверка CLIP 
     clip_result = clip_check(final_url, name)
     if not clip_result["ok"]:
         raise HTTPException(400, clip_result["reason"])
 
+    # Сохранение в базу данных
     item = WardrobeItem(
         user_id=user_id,
         name=name,
