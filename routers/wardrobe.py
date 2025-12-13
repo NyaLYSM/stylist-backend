@@ -72,12 +72,12 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
         
     image.save(output_buffer, format="JPEG", quality=90) 
     
-    # <<< КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПЕРЕМОТАТЬ БУФЕР В НАЧАЛО
-    output_buffer.seek(0)
-    
+    # <<< КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: Получаем сырые байты, а не объект буфера
+    processed_data = output_buffer.getvalue()
+
     # 3. Отправляем перекодированные данные в Telegraph
-    # Передаем буфер напрямую в requests
-    files = {'file': (filename, output_buffer, final_mime_type)} 
+    # Передаем сырые байты. Это самый надежный способ для requests.
+    files = {'file': (filename, processed_data, final_mime_type)} 
     
     try:
         response = requests.post("https://telegra.ph/upload", files=files, timeout=15) 
@@ -116,7 +116,6 @@ def upload_to_telegraph(data: bytes, filename: str) -> str:
         raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут. {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Telegraph: {e}")
-
 
 # ================== ENDPOINTS ==================
 # ... (Остальные роуты /list, /add, /upload, /delete без изменений) ...
