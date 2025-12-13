@@ -17,9 +17,9 @@ from utils.clip_helper import clip_check
 
 router = APIRouter()
 
-# ================== PTP.MOE CONFIG ==================
+# ================== CONFIG ==================
 # Простой хостинг, не требующий ключей и не использующий Cloudflare
-PTP_UPLOAD_URL = "https://ptp.moe/api/upload"
+POSTIMG_UPLOAD_URL = "https://postimg.cc/upload"
 
 # ================== LIMITS ==================
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -52,10 +52,9 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
 
-# *** НОВАЯ ФУНКЦИЯ: ЗАГРУЗКА НА PTP.MOE ***
-def upload_to_ptp(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в стандартный JPEG и загружает на ptp.moe."""
-    
+def upload_to_postimg(data: bytes, filename: str) -> str:
+    """Перекодирует изображение в стандартный JPEG и загружает на Postimages."""
+
     # 1. Загружаем байты в Pillow для принудительного перекодирования в JPEG
     try:
         image = Image.open(io.BytesIO(data))
@@ -66,55 +65,60 @@ def upload_to_ptp(data: bytes, filename: str) -> str:
     output_buffer = io.BytesIO()
     if image.mode != 'RGB':
         image = image.convert('RGB')
-        
+
     image.save(output_buffer, format="JPEG", quality=90) 
     processed_data = output_buffer.getvalue() # Получаем сырые байты
 
-    # 3. Отправляем данные на PTP.MOE
-    
-    # PTP.MOE принимает файл в поле 'file'
+    # 3. Отправляем данные на Postimages
+
+    # Postimages принимает файл в поле 'file' и использует специальный URL для прямых ссылок
     files = {
         'file': (filename, processed_data, 'image/jpeg')
     }
 
+    # Мы используем прямой URL загрузки, а не их API, чтобы избежать ключей.
+    # Это должно дать нам JSON-ответ.
+    data_payload = {
+        'upload': 'true',
+        'api': 'true',
+        'nsfw': '0'
+    }
+
     try:
-        response = requests.post(PTP_UPLOAD_URL, files=files, timeout=20) 
+        response = requests.post(POSTIMG_UPLOAD_URL, files=files, data=data_payload, timeout=30) 
         response.raise_for_status() 
-        
-        # PTP.MOE возвращает список, содержащий один объект с прямой ссылкой
+
         result = response.json()
-        
-        if isinstance(result, list) and len(result) > 0 and 'link' in result[0]:
-            # Ссылка хранится в поле 'link'
-            return result[0]['link']
+
+        # Postimages возвращает ключ 'url_key' и 'hash' для формирования прямой ссылки
+        if result.get('hash') and result.get('url_key'):
+            # Формируем прямую ссылку на изображение: i.postimg.cc/<hash>/<url_key>.jpeg
+            image_hash = result['hash']
+            url_key = result['url_key']
+            # Сохраняем всегда в JPEG, так как мы его перекодировали
+            final_url = f"https://i.postimg.cc/{url_key}/{image_hash}.jpeg"
+            return final_url
         else:
-            # PTP.MOE вернул неожиданный ответ
-            error_detail = response.text
-            raise Exception(f"Неожиданный ответ PTP.MOE: {error_detail}")
+            error_detail = result.get('message', response.text)
+            raise Exception(f"Неожиданный ответ Postimages: {error_detail}")
 
     except requests.exceptions.RequestException as e:
-        ptp_error_detail = "Неизвестная ошибка PTP.MOE."
-        
+        # Логика обработки ошибок, аналогичная предыдущим
+        ptp_error_detail = "Неизвестная ошибка Postimages."
+
         if hasattr(e, 'response') and e.response is not None:
              response_text = e.response.text
-             try:
-                 # Пытаемся получить JSON-ответ об ошибке
-                 json_data = e.response.json()
-                 ptp_error_detail = json_data.get('error', response_text)
-             except json.JSONDecodeError:
-                 ptp_error_detail = response_text
-                 
-             print(f"DEBUG: Full PTP.MOE response: {ptp_error_detail}") 
-             
+
+             print(f"DEBUG: Full Postimages response: {response_text}") 
+
              raise HTTPException(
                 status_code=400, 
-                detail=f"Ошибка загрузки фото. Ответ PTP.MOE: {ptp_error_detail}"
+                detail=f"Ошибка загрузки фото. Ответ Postimages: {response_text}"
             )
-        
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в PTP.MOE. Сервер недоступен или таймаут. {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа PTP.MOE: {e}")
 
+        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Postimages. Сервер недоступен или таймаут. {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Postimages: {e}")
 
 # ================== ENDPOINTS ==================
 
@@ -145,9 +149,9 @@ def upload_item_file(
     ext = image_kind.extension
     
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
-    
-    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ PTP.MOE ***
-    final_url = upload_to_ptp(data, fname) 
+
+    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ POSTIMAGES ***
+    final_url = upload_to_postimg(data, fname) 
 
     # Проверка CLIP 
     clip_result = clip_check(final_url, name)
@@ -168,4 +172,38 @@ def upload_item_file(
 
     return {"status": "ok", "item": item}
 
-# ... (Роут /delete остается без изменений) ...
+@router.get("/list")
+def list_items(user_id: int, db: Session = Depends(get_db)):
+    """Получить список всех вещей пользователя."""
+    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
+    
+    # Преобразование объектов SQLAlchemy в словари для корректного ответа FastAPI
+    # (Это нужно, если вы не используете Pydantic)
+    result = []
+    for item in items:
+        result.append({
+            "id": item.id,
+            "user_id": item.user_id,
+            "name": item.name,
+            "item_type": item.item_type,
+            "image_url": item.image_url,
+            "created_at": item.created_at.isoformat()
+        })
+        
+    return {"status": "ok", "items": result}
+
+@router.delete("/delete")
+def delete_item(item_id: int, user_id: int, db: Session = Depends(get_db)):
+    """Удалить вещь из гардероба по ID."""
+    item = db.query(WardrobeItem).filter(
+        WardrobeItem.id == item_id, 
+        WardrobeItem.user_id == user_id
+    ).first()
+
+    if not item:
+        raise HTTPException(404, "Вещь не найдена или не принадлежит этому пользователю.")
+
+    db.delete(item)
+    db.commit()
+
+    return {"status": "ok", "message": f"Вещь с ID {item_id} удалена."}
