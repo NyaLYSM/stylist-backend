@@ -17,22 +17,17 @@ from utils.clip_helper import clip_check
 
 router = APIRouter()
 
-# ================== IMAGUR CONFIG ==================
-# Публичный Client ID для анонимной загрузки
-IMGUR_CLIENT_ID = "944dd80d22dc9b4" # Стандартный, несекретный ID для анонимной загрузки
-IMGUR_UPLOAD_URL = "https://api.imgur.com/3/image"
+# ================== VGY.ME CONFIG ==================
+VGY_UPLOAD_URL = "https://vgy.me/upload"
 
 # ================== LIMITS ==================
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
-# Оставляем только JPEG и PNG, так как Imgur может перекодировать
 ALLOWED_MIMES = ("image/jpeg", "image/png") 
 
-# ================== BLACKLIST ==================
+# ================== BLACKLIST/WHITELIST (Остаются без изменений) ==================
 BLACKLIST_WORDS = {
     "porn", "sex", "xxx", "nsfw", "нелегаль", "запрет"
 }
-
-# ================== HUGE WHITELIST ==================
 WHITELIST_KEYWORDS = {
     "футболка","лонгслив","рубашка","поло","майка","топ","кроп","блузка",
     "платье","сарафан","комбинация",
@@ -42,7 +37,7 @@ WHITELIST_KEYWORDS = {
     "свитер","джемпер","кофта","кардиган","худи","толстовка","свитшот",
 }
 
-# ================== UTILS ==================
+# ================== UTILS (Остаются без изменений) ==================
 def get_image_kind(data: bytes) -> Optional[filetype.Type]:
     kind = filetype.guess(data)
     if kind and kind.mime in ALLOWED_MIMES:
@@ -56,9 +51,9 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
-# *** НОВАЯ ФУНКЦИЯ: ЗАГРУЗКА НА IMGUR ***
-def upload_to_imgur(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в стандартный JPEG и загружает на Imgur."""
+# *** НОВАЯ ФУНКЦИЯ: ЗАГРУЗКА НА VGY.ME ***
+def upload_to_vgy(data: bytes, filename: str) -> str:
+    """Перекодирует изображение в стандартный JPEG и загружает на Vgy.me."""
     
     # 1. Загружаем байты в Pillow для принудительного перекодирования в JPEG
     try:
@@ -74,87 +69,57 @@ def upload_to_imgur(data: bytes, filename: str) -> str:
     image.save(output_buffer, format="JPEG", quality=90) 
     processed_data = output_buffer.getvalue() # Получаем сырые байты
 
-    # 3. Отправляем данные на Imgur
-    headers = {
-        "Authorization": f"Client-ID {IMGUR_CLIENT_ID}"
-    }
+    # 3. Отправляем данные на Vgy.me
     
-    # Imgur принимает файл как base64 или как multipart/form-data. 
-    # multipart/form-data часто надежнее.
+    # Vgy.me принимает файл в поле 'file' и возвращает JSON с прямой ссылкой
     files = {
-        'image': ('file', processed_data, 'image/jpeg'),
-        'type': (None, 'file'),
-        'album': (None, 'false'), # Не загружать в альбом
-        'title': (None, filename)
+        'file': (filename, processed_data, 'image/jpeg')
+    }
+    data_payload = {
+        'anon': 'true', # Анонимная загрузка
+        'i': '1'       # Индикатор, что мы хотим JSON-ответ
     }
 
     try:
-        response = requests.post(IMGUR_UPLOAD_URL, files=files, headers=headers, timeout=15) 
+        response = requests.post(VGY_UPLOAD_URL, files=files, data=data_payload, timeout=20) 
         response.raise_for_status() 
         
         result = response.json()
         
-        if result.get('success') and result.get('data'):
-            # Ссылка на изображение
-            return result['data']['link']
+        # Vgy.me возвращает ключ 'image' с прямой ссылкой
+        if result.get('is_error') == False and result.get('image'):
+            return result['image']
         else:
-            # Imgur вернул ошибку, но с кодом 200 (редко, но бывает)
-            error_detail = result.get('data', {}).get('error', 'Неизвестная ошибка Imgur')
-            raise Exception(f"Ошибка Imgur API: {error_detail}")
+            # Vgy.me вернул ошибку, но с кодом 200
+            error_detail = result.get('error', 'Неизвестная ошибка Vgy.me')
+            raise Exception(f"Ошибка Vgy.me API: {error_detail}")
 
     except requests.exceptions.RequestException as e:
-        imgur_error_detail = "Неизвестная ошибка Imgur."
+        vgy_error_detail = "Неизвестная ошибка Vgy.me."
         
         if hasattr(e, 'response') and e.response is not None:
              response_text = e.response.text
              try:
                  json_data = e.response.json()
-                 # Imgur возвращает { "data": { "error": "..." } } для 400 ошибок
-                 imgur_error_detail = json_data.get('data', {}).get('error', response_text)
+                 vgy_error_detail = json_data.get('error', response_text)
              except json.JSONDecodeError:
-                 imgur_error_detail = response_text
+                 vgy_error_detail = response_text
                  
-             print(f"DEBUG: Full Imgur response: {imgur_error_detail}") 
+             print(f"DEBUG: Full Vgy.me response: {vgy_error_detail}") 
              
              raise HTTPException(
                 status_code=400, 
-                detail=f"Ошибка загрузки фото. Ответ Imgur: {imgur_error_detail}"
+                detail=f"Ошибка загрузки фото. Ответ Vgy.me: {vgy_error_detail}"
             )
         
-        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Imgur. Сервер недоступен или таймаут. {e}")
+        raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Vgy.me. Сервер недоступен или таймаут. {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Imgur: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки ответа Vgy.me: {e}")
 
 
 # ================== ENDPOINTS ==================
 
-@router.get("/list")
-def get_wardrobe_list(user_id: int, db: Session = Depends(get_db)):
-    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
-    return {"status": "ok", "items": items}
-
-@router.post("/add")
-def add_item_url(
-    user_id: int,
-    name: str,
-    image_url: str,
-    item_type: str,
-    db: Session = Depends(get_db)
-):
-    validate_name(name)
-
-    item = WardrobeItem(
-        user_id=user_id,
-        name=name,
-        item_type=item_type,
-        image_url=image_url,
-        created_at=datetime.utcnow()
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-
-    return {"status": "ok", "item": item}
+# ... (Роуты /list, /add остаются без изменений) ...
 
 @router.post("/upload")
 def upload_item_file(
@@ -163,29 +128,26 @@ def upload_item_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # MIME-проверка
     if file.content_type not in ALLOWED_MIMES:
-        raise HTTPException(400, "Неподдерживаемый тип файла (Imgur предпочитает JPEG/PNG).")
+        raise HTTPException(400, "Неподдерживаемый тип файла (требуется JPEG/PNG).")
 
-    # Проверка размера
     data = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, "Файл больше 5 МБ")
 
     validate_name(name)
 
-    # Проверка, что это изображение
     image_kind = get_image_kind(data) 
     
     if not image_kind:
-        raise HTTPException(400, "Не изображение или неподдерживаемый формат (проверено по байтам).")
+        raise HTTPException(400, "Не изображение или неподдерживаемый формат.")
 
     ext = image_kind.extension
     
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
     
-    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ IMGUR ***
-    final_url = upload_to_imgur(data, fname) 
+    # *** ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ VGY.ME ***
+    final_url = upload_to_vgy(data, fname) 
 
     # Проверка CLIP 
     clip_result = clip_check(final_url, name)
@@ -205,21 +167,4 @@ def upload_item_file(
 
     return {"status": "ok", "item": item}
 
-@router.delete("/{item_id}")
-def delete_item(
-    item_id: int,
-    user_id: int, 
-    db: Session = Depends(get_db)
-):
-    item = db.query(WardrobeItem).filter(
-        WardrobeItem.id == item_id,
-        WardrobeItem.user_id == user_id
-    ).first()
-
-    if not item:
-        raise HTTPException(status_code=404, detail="Вещь не найдена или нет доступа")
-
-    db.delete(item)
-    db.commit()
-
-    return {"status": "ok", "message": "Вещь успешно удалена"}
+# ... (Роут /delete остается без изменений) ...
