@@ -1,5 +1,5 @@
 # routers/wardrobe.py
-import io
+import io # *** НОВЫЙ ИМПОРТ ***
 import requests
 import filetype
 import os 
@@ -26,11 +26,16 @@ BLACKLIST_WORDS = {
 
 # ================== HUGE WHITELIST ==================
 WHITELIST_KEYWORDS = {
-    # ... (список ключевых слов) ...
+    # ---------- RU ----------
+    "футболка","лонгслив","рубашка","поло","майка","топ","кроп","блузка",
+    "платье","сарафан","комбинация",
+    "джинсы","брюки","штаны","чиносы","леггинсы","лосины",
+    "шорты","бермуды",
+    "юбка","мини","миди","макси",
+    "свитер","джемпер","кофта","кардиган","худи","толстовка","свитшот",
 }
 
 # ================== UTILS ==================
-# *** ИСПРАВЛЕНО: Функция теперь возвращает объект filetype.Kind для надежного определения MIME ***
 def get_image_kind(data: bytes) -> Optional[filetype.Type]:
     """Возвращает объект filetype.Type (ext и mime), если файл является разрешенным изображением."""
     kind = filetype.guess(data)
@@ -45,11 +50,13 @@ def validate_name(name: str):
         if word in name.lower():
             raise HTTPException(400, "Название содержит запрещенные слова")
         
+# *** ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ TELEGRAPH: Используем io.BytesIO для надежной отправки данных ***
 def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
     """Загружает байты изображения в Telegra.ph, используя фактический MIME-тип."""
     
-    # MIME-тип теперь гарантированно получен из заголовка файла
-    files = {'file': (filename, data, mime_type)} 
+    # Оборачиваем байты в буфер, чтобы requests мог правильно обработать multipart/form-data
+    file_buffer = io.BytesIO(data)
+    files = {'file': (filename, file_buffer, mime_type)} 
     
     try:
         response = requests.post("https://telegra.ph/upload", files=files, timeout=10)
@@ -67,11 +74,12 @@ def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
     except requests.exceptions.RequestException as e:
         print(f"Telegraph upload failed (RequestError): {e}")
         
-        # Улучшенное сообщение об ошибке для клиента
         detail_msg = "Ошибка Bad Request при отправке в Telegraph. Проверьте формат файла."
         if hasattr(e, 'response') and e.response is not None:
+             # Выводим фактический ответ от Telegraph для лучшей диагностики
              detail_msg += f" Ответ Telegraph: {e.response.text}"
-             raise HTTPException(status_code=400, detail=detail_msg)
+             if e.response.status_code == 400:
+                raise HTTPException(status_code=400, detail=detail_msg)
         
         raise HTTPException(status_code=503, detail=f"Ошибка загрузки в Telegraph. Сервер недоступен или таймаут.")
     except Exception as e:
@@ -80,9 +88,34 @@ def upload_to_telegraph(data: bytes, filename: str, mime_type: str) -> str:
 
 # ================== ENDPOINTS ==================
 
-# ... (роуты /list, /add) ...
+@router.get("/list")
+def get_wardrobe_list(user_id: int, db: Session = Depends(get_db)):
+    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
+    return {"status": "ok", "items": items}
 
-# *** ИСПРАВЛЕНО: Роут /upload теперь использует надежное определение MIME-типа ***
+@router.post("/add")
+def add_item_url(
+    user_id: int,
+    name: str,
+    image_url: str,
+    item_type: str,
+    db: Session = Depends(get_db)
+):
+    validate_name(name)
+
+    item = WardrobeItem(
+        user_id=user_id,
+        name=name,
+        item_type=item_type,
+        image_url=image_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+
+    return {"status": "ok", "item": item}
+
 @router.post("/upload")
 def upload_item_file(
     user_id: int = Form(...),
@@ -90,7 +123,6 @@ def upload_item_file(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-    # Проверка MIME-типа из клиента (первая, менее надежная линия обороны)
     if file.content_type not in ALLOWED_MIMES:
         raise HTTPException(400, "Неподдерживаемый тип файла")
 
@@ -100,23 +132,20 @@ def upload_item_file(
 
     validate_name(name)
 
-    # *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получаем точные данные о файле из его байтов ***
     image_kind = get_image_kind(data) 
     
     if not image_kind:
-        # Это сработает, если файл не JPEG/PNG/WebP/AVIF, даже если клиент сказал "image/jpeg"
         raise HTTPException(400, "Не изображение или неподдерживаемый формат (проверено по байтам).")
 
     final_mime_type = image_kind.mime
     ext = image_kind.extension
-    # *** КОНЕЦ КРИТИЧЕСКОГО ИСПРАВЛЕНИЯ ***
     
     fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.{ext}"
     
-    # Теперь передаем надежный MIME-тип
+    # Передаем данные в исправленную функцию
     final_url = upload_to_telegraph(data, fname, final_mime_type) 
 
-    # Проверка CLIP (предполагаем, что этот шаг корректен)
+    # Проверка CLIP 
     clip_result = clip_check(final_url, name)
     if not clip_result["ok"]:
         raise HTTPException(400, clip_result["reason"])
@@ -135,7 +164,6 @@ def upload_item_file(
     return {"status": "ok", "item": item}
 
 @router.delete("/{item_id}")
-# ... (код функции delete_item) ...
 def delete_item(
     item_id: int,
     user_id: int, 
