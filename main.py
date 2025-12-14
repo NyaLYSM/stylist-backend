@@ -5,7 +5,8 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# ИСПРАВЛЕНИЕ: Используем относительные импорты (.routers)
+# ИСПРАВЛЕНИЕ: Используем ОТНОСИТЕЛЬНЫЕ импорты (.routers, .database)
+# ИСПРАВЛЕНИЕ: Убрана дублирующаяся 'api_auth'
 from .routers import auth, wardrobe, looks, profile, import_router, api_auth 
 from .database import Base, engine 
 
@@ -24,7 +25,6 @@ app = FastAPI(
 # создаём папку static/images если нет
 os.makedirs("static/images", exist_ok=True)
 # ВАЖНО: Папка "static" должна существовать в корне проекта!
-# Мы используем app, который только что инициализировали.
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # CORS - разрешаем все источники для WebApp
@@ -38,7 +38,7 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ОСТАВЛЯЕМ КАК ЕСТЬ)
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ 
 # ========================================
 
 try:
@@ -46,28 +46,23 @@ try:
     existing_tables = engine.dialect.get_table_names(bind=engine)
     needs_migration = False
 
-    # Логика автоматического создания/обновления таблиц (если нет Alembic)
-    # Этот блок кода остается как был
     if existing_tables and "users" in existing_tables:
         from sqlalchemy import inspect
         insp = inspect(engine)
         user_columns = [col['name'] for col in insp.get_columns('users')]
-        # Проверяем наличие нового поля
+        # Проверяем наличие нового поля hashed_password
         if "hashed_password" not in user_columns:
-            print("⚠️ Найдена старая схема БД. Требуется миграция/ручное обновление.")
-            # Если вы не хотите автоматической миграции, 
-            # удалите этот блок и выполните ALTER TABLE вручную.
+            print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
+            # В реальном проекте здесь нужен Alembic. Для быстрого запуска:
             # Base.metadata.drop_all(bind=engine)
             # Base.metadata.create_all(bind=engine)
-            # needs_migration = True # Только если вы хотите автоматический Drop/Create
+            # Если вы не хотите Drop/Create, закомментируйте эти строки и добавьте колонку вручную.
+            pass
 
-    if needs_migration:
-        Base.metadata.drop_all(bind=engine)
+    if not existing_tables or needs_migration:
+        # Создаем таблицы, если их нет или нужна миграция
         Base.metadata.create_all(bind=engine)
-        print("✅ БД успешно обновлена!")
-    elif not existing_tables:
-        Base.metadata.create_all(bind=engine)
-        print("✅ БД создана!")
+        print("✅ БД создана/обновлена!")
     else:
         print("✅ БД актуальна")
         
@@ -83,7 +78,7 @@ except Exception as e:
 
 # Подключаем роутеры
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"]) # НОВЫЙ РОУТЕР
+app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"]) 
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
