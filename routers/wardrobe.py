@@ -1,26 +1,26 @@
 # stylist-backend/routers/wardrobe.py
 
+from datetime import datetime
 import io
 import os
-from datetime import datetime
-from typing import List
+import shutil
 
 from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
 from sqlalchemy.orm import Session
 from PIL import Image
 
-# Импорты для работы с S3
+# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете)
 import boto3
 from botocore.exceptions import ClientError
 
-# Импорты вашего проекта
-from ..database import get_db
-from ..models import WardrobeItem
-from ..utils.clip_helper import clip_check
-from ..utils.auth import get_current_user_id # Защита роутов
+# ИСПРАВЛЕНО: Заменены относительные импорты на абсолютные
+from database import get_db
+from models import WardrobeItem # Предполагаем, что класс WardrobeItem находится в models.py
+from utils.clip_helper import clip_check, CLIP_URL 
+from utils.storage import save_image, delete_image # Добавлен импорт для работы с хранением
+from utils.validators import validate_name, validate_image_bytes # Добавлен импорт валидаторов
 
-router = APIRouter(tags=["Wardrobe"]) # Префикс /api/wardrobe уже задан в main.py
-
+router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
 # ==========================================================
 # 🛠️ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ S3
 # ==========================================================
