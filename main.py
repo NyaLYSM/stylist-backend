@@ -1,19 +1,17 @@
-# stylist-backend/main.py
-
+import sys
 import os
-import sys 
 
-# ИСПРАВЛЕНИЕ ДЛЯ ДЕПЛОЯ: 
-# Добавляем каталог проекта в путь поиска, чтобы Python нашел 'routers' и 'database'
-sys.path.append(os.path.dirname(os.path.abspath(__file__))) 
+project_root = os.path.abspath(os.path.dirname(__file__))
+
+sys.path.insert(0, project_root)
+# =========================================
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# ИСПРАВЛЕНО: Используем АБСОЛЮТНЫЕ импорты (без точек, теперь это работает благодаря sys.path)
 from routers import auth, wardrobe, looks, profile, import_router, api_auth 
-from database import Base, engine 
+from database import Base, engine
 
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
