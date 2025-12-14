@@ -1,14 +1,9 @@
-# stylist-backend/routers/profile.py (Финальное исправление)
-
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-from database import get_db # <-- Абсолютный импорт
-# ИСПРАВЛЕНИЕ: Замена относительных импортов на абсолютные
-from models import User, WardrobeItem, Look, Analysis # <-- Абсолютный импорт
-from utils.auth import get_current_user_id # <-- Абсолютный импорт
-from datetime import datetime
-
-router = APIRouter(prefix="/profile", tags=["Profile"]) 
+# В файле routers/profile.py
+# ...
+from database import get_db
+from models import User, WardrobeItem, Look, Analysis 
+from utils.auth import get_current_user_id 
+from datetime import datetime 
 
 # Получить профиль пользователя + последние 5 анализов
 @router.get("/") 
