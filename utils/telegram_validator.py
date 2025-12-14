@@ -1,13 +1,16 @@
 # stylist-backend/utils/telegram_validator.py
+
 import hmac
 import hashlib
 import json
+import os # ДОБАВЛЕНО: Импорт os для доступа к переменным окружения
 from urllib.parse import unquote
 from typing import Optional
 
-# !!! УБЕДИТЕСЬ, что у вас есть файл config.py и в нем определен BOT_TOKEN из .env
-# Я предполагаю, что BOT_TOKEN настроен через переменные окружения Render
-from config import BOT_TOKEN 
+# !!! ИСПРАВЛЕНИЕ: Прямое получение токена из окружения, чтобы избежать 
+# проблемы с путем импорта из поддиректории
+# from config import BOT_TOKEN # <-- УДАЛИТЬ
+BOT_TOKEN = os.getenv("BOT_TOKEN") # <-- ДОБАВИТЬ
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не установлен! Невозможно проверить initData Telegram.")
