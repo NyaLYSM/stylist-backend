@@ -8,7 +8,7 @@ from models import User, WardrobeItem, Look, Analysis
 from utils.auth import get_current_user_id 
 from datetime import datetime
 
-router = APIRouter()
+router = APIRouter(prefix="/profile", tags=["Profile"]) # Добавлен префикс для ясности
 
 # Получить профиль пользователя + последние 5 анализов
 @router.get("/") 
