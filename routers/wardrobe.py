@@ -1,5 +1,3 @@
-# stylist-backend/routers/wardrobe.py
-
 from datetime import datetime
 import io
 import os
@@ -9,22 +7,23 @@ from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
 from sqlalchemy.orm import Session
 from PIL import Image
 
-# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете)
+# ИСПРАВЛЕНО: Абсолютные импорты
+from database import get_db
+from models import WardrobeItem
+from utils.clip_helper import clip_check, CLIP_URL 
+from utils.storage import delete_image, save_image
+from utils.validators import validate_name, validate_image_bytes
+
+# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете) - Оставляем, так как они нужны в теле кода
 import boto3
 from botocore.exceptions import ClientError
 
-# ИСПРАВЛЕНО: Заменены относительные импорты на абсолютные
-from database import get_db
-from models import WardrobeItem # Предполагаем, что класс WardrobeItem находится в models.py
-from utils.clip_helper import clip_check, CLIP_URL 
-from utils.storage import save_image, delete_image # Добавлен импорт для работы с хранением
-from utils.validators import validate_name, validate_image_bytes # Добавлен импорт валидаторов
 
 router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
-# ==========================================================
-# 🛠️ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ S3
-# ==========================================================
 
+# ==========================================================
+# ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3 
+# ==========================================================
 def get_s3_client():
     """Возвращает настроенный клиент Boto3 S3."""
     S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID")
@@ -35,12 +34,13 @@ def get_s3_client():
         raise HTTPException(500, "Ошибка конфигурации S3: не настроены переменные окружения.")
         
     session = boto3.session.Session()
-    return session.client(
-        service_name='s3',
+    s3_client = session.client(
+        's3',
         endpoint_url=S3_ENDPOINT_URL,
         aws_access_key_id=S3_ACCESS_KEY_ID,
         aws_secret_access_key=S3_SECRET_ACCESS_KEY
     )
+    return s3_client
 
 def save_to_s3(data: bytes, filename: str) -> str:
     """Перекодирует изображение в JPEG и сохраняет в Яндекс.Облако Object Storage."""
