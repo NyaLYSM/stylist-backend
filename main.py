@@ -45,32 +45,39 @@ app.add_middleware(
 # ========================================
 
 try:
-    # Проверка, существуют ли таблицы
-    existing_tables = engine.dialect.get_table_names(bind=engine)
-    needs_migration = False
-
-    if existing_tables and "users" in existing_tables:
-        from sqlalchemy import inspect
-        insp = inspect(engine)
-        user_columns = [col['name'] for col in insp.get_columns('users')]
-        # Проверяем наличие нового поля hashed_password
-        if "hashed_password" not in user_columns:
-            print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
-            # В реальном проекте здесь нужен Alembic. Для быстрого запуска:
-            # pass # Пропускаем, чтобы не удалять данные
-            pass
-
-    if not existing_tables or needs_migration:
-        # Создаем таблицы, если их нет или нужна миграция
-        Base.metadata.create_all(bind=engine)
-        print("✅ БД создана/обновлена!")
-    else:
-        print("✅ БД актуальна")
+    from sqlalchemy import inspect
+    # ИСПРАВЛЕНИЕ: Используем активное подключение для инспекции БД
+    with engine.connect() as connection:
         
+        # ИСПРАВЛЕНИЕ ОШИБКИ: PGDialect.get_table_names требует объект connection
+        existing_tables = connection.dialect.get_table_names(connection)
+        needs_migration = False
+
+        if existing_tables and "users" in existing_tables:
+            # Используем инспектор для текущего подключения
+            insp = inspect(connection)
+            user_columns = [col['name'] for col in insp.get_columns('users')]
+            
+            # Проверяем наличие нового поля hashed_password
+            if "hashed_password" not in user_columns:
+                print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
+                # pass остается, чтобы пропустить миграцию без Alembic
+                pass 
+
+        if not existing_tables or needs_migration:
+            # Создаем таблицы, если их нет или нужна миграция
+            Base.metadata.create_all(bind=engine)
+            print("✅ БД создана/обновлена!")
+        else:
+            print("✅ БД актуальна")
+            
 except Exception as e:
     print(f"⚠️  Ошибка при проверке БД: {e}")
-    # Пытаемся создать таблицы на всякий случай
+    # Пытаемся создать таблицы на случай, если сама проверка упала. 
+    # SQLAlchemy пропустит уже существующие таблицы.
     Base.metadata.create_all(bind=engine)
+
+# ========================================
 
 
 # ========================================
