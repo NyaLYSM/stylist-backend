@@ -1,14 +1,19 @@
 # stylist-backend/main.py
 
 import os
+import sys 
+
+# ИСПРАВЛЕНИЕ ДЛЯ ДЕПЛОЯ: 
+# Добавляем каталог проекта в путь поиска, чтобы Python нашел 'routers' и 'database'
+sys.path.append(os.path.dirname(os.path.abspath(__file__))) 
+
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# ИСПРАВЛЕНИЕ: Используем ОТНОСИТЕЛЬНЫЕ импорты (.routers, .database)
-# ИСПРАВЛЕНИЕ: Убрана дублирующаяся 'api_auth'
-from .routers import auth, wardrobe, looks, profile, import_router, api_auth 
-from .database import Base, engine 
+# ИСПРАВЛЕНО: Используем АБСОЛЮТНЫЕ импорты (без точек, теперь это работает благодаря sys.path)
+from routers import auth, wardrobe, looks, profile, import_router, api_auth 
+from database import Base, engine 
 
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
@@ -54,9 +59,7 @@ try:
         if "hashed_password" not in user_columns:
             print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
             # В реальном проекте здесь нужен Alembic. Для быстрого запуска:
-            # Base.metadata.drop_all(bind=engine)
-            # Base.metadata.create_all(bind=engine)
-            # Если вы не хотите Drop/Create, закомментируйте эти строки и добавьте колонку вручную.
+            # pass # Пропускаем, чтобы не удалять данные
             pass
 
     if not existing_tables or needs_migration:
