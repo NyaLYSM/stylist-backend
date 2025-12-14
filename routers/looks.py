@@ -1,10 +1,11 @@
-# stylist-backend/routers/looks.py (Изменения)
+# stylist-backend/routers/looks.py (Исправленное)
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from database import get_db
-from ..models import User, Look
-from ..utils.auth import get_current_user_id # <-- НОВЫЙ ИМПОРТ
+# ИСПРАВЛЕНИЕ: Изменяем относительные импорты на абсолютные
+from models import User, Look 
+from utils.auth import get_current_user_id 
 from datetime import datetime
 
 router = APIRouter()
