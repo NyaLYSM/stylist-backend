@@ -1,4 +1,4 @@
-# routers/wardrobe.py
+# routers/wardrobe.py (Финальное исправление роутов)
 
 from datetime import datetime
 import io
@@ -14,17 +14,17 @@ import boto3
 from botocore.exceptions import ClientError
 
 # ==========================================================
-# ИСПРАВЛЕННЫЕ АБСОЛЮТНЫЕ ИМПОРТЫ
+# АБСОЛЮТНЫЕ ИМПОРТЫ
 # ==========================================================
 from database import get_db
 from models import WardrobeItem 
 from utils.clip_helper import clip_check, CLIP_URL 
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name, validate_image_bytes
-# <--- ВАЖНО: ЭТОТ ИМПОРТ РЕШАЕТ ПРОБЛЕМУ NameError
 from utils.auth import get_current_user_id 
 
-router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
+# ИСПРАВЛЕНИЕ 1: Убираем prefix="/wardrobe"
+router = APIRouter(tags=["Wardrobe"])
 
 # ==========================================================
 # ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3 (если используется S3)
@@ -36,8 +36,6 @@ def get_s3_client():
     S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
 
     if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL]):
-        # В реальной жизни, возможно, стоит вернуть None или заглушку, 
-        # но для деплоя с S3 это должно быть
         raise HTTPException(status_code=500, detail="Ошибка конфигурации S3: не настроены переменные окружения.")
         
     session = boto3.session.Session()
@@ -51,12 +49,12 @@ def get_s3_client():
 
 
 # ------------------------------------------------------------------------------------
-# Роут /all: Получить все вещи пользователя
+# Роут /list: Получить все вещи пользователя
 # ------------------------------------------------------------------------------------
-@router.get("/all")
+# ИСПРАВЛЕНИЕ 3: Меняем /all на /list
+@router.get("/list") 
 def get_all_items(
     db: Session = Depends(get_db),
-    #user_id используется КАК ПАРАМЕТР ФУНКЦИИ
     user_id: int = Depends(get_current_user_id) 
 ):
     items = db.query(WardrobeItem).filter(
@@ -67,9 +65,10 @@ def get_all_items(
 
 
 # ------------------------------------------------------------------------------------
-# Роут /add: Добавить вещь
+# Роут /upload: Добавить вещь
 # ------------------------------------------------------------------------------------
-@router.post("/add")
+# ИСПРАВЛЕНИЕ 2: Меняем /add на /upload
+@router.post("/upload") 
 async def add_item(
     name: str = Form(...),
     image: UploadFile = File(...),
@@ -128,7 +127,7 @@ async def add_item(
 def delete_item(
     item_id: int, 
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id) # Безопасное получение ID
+    user_id: int = Depends(get_current_user_id)
 ):
     # Ищем вещь, которая принадлежит именно этому пользователю
     item = db.query(WardrobeItem).filter(
