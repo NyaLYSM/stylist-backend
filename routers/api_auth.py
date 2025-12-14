@@ -1,16 +1,16 @@
 # stylist-backend/routers/api_auth.py
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from sqlalchemy import func, BigInteger # <-- ДОБАВЛЕН func для получения уникального ID
 from typing import Optional
 
-# Импорты из других частей вашего проекта
-from ..database import get_db
-from ..models import User 
-from ..schemas import APILogin, Token 
-from ..utils.auth import get_password_hash, verify_password, create_access_token
+# ИСПРАВЛЕНО: Заменены относительные импорты на абсолютные
+from database import get_db
+from models import User # Теперь импортируем из корневого models.py
+from schemas import APILogin, Token # Предполагаем, что schemas.py находится в корне
+from utils.auth import get_password_hash, verify_password, create_access_token
+from utils.auth import get_current_user_id # Теперь импортируем из utils.auth
 
 router = APIRouter(tags=["API Auth"])
 
