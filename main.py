@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from routers import auth, wardrobe, looks, profile, import_router, api_auth 
+from routers import auth, wardrobe, looks, profile, import_router, api_auth, tg_auth 
 from database import Base, engine
 
 # ========================================
@@ -87,6 +87,7 @@ except Exception as e:
 # Подключаем роутеры
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"]) 
+app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"]) 
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
