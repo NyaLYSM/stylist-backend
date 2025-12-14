@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from ..database import get_db
+from database import get_db
 from ..models import User, Look
 from ..utils.auth import get_current_user_id # <-- НОВЫЙ ИМПОРТ
 from datetime import datetime
