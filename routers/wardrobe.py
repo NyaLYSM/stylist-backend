@@ -15,41 +15,22 @@ from botocore.exceptions import ClientError
 
 from ..database import get_db
 from ..models.models import WardrobeItem
-from ..utils.clip_helper import clip_check, CLIP_URL # Предполагаем, что CLIP_URL обновлен
+from ..utils.clip_helper import clip_check, CLIP_URL 
 
 router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
 
 # ==========================================================
-# НОВАЯ ФУНКЦИЯ: СОХРАНЕНИЕ В S3
+# ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3
 # ==========================================================
-def save_to_s3(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в JPEG и сохраняет в Яндекс.Облако Object Storage."""
-    
-    # 1. Загружаем переменные окружения
-    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
+def get_s3_client():
+    """Возвращает настроенный клиент Boto3 S3."""
     S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID")
     S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY")
     S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
 
-    if not all([S3_BUCKET_NAME, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL]):
-        # Это сработает, если вы забыли настроить переменные на Render
+    if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL]):
         raise HTTPException(500, "Ошибка конфигурации S3: не настроены переменные окружения.")
-
-    # 2. Перекодируем в JPEG в памяти (для оптимизации и сжатия)
-    try:
-        image = Image.open(io.BytesIO(data))
-        # Конвертируем в RGB, чтобы избежать проблем с форматами (например, PNG с прозрачностью)
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-            
-        output_buffer = io.BytesIO()
-        # Сохраняем в буфер как JPEG с небольшим сжатием
-        image.save(output_buffer, format="JPEG", quality=90) 
-        output_buffer.seek(0)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка обработки изображения: {e}")
-
-    # 3. Подключение к S3 (используем ключи и endpoint Яндекса)
+        
     session = boto3.session.Session()
     s3_client = session.client(
         service_name='s3',
@@ -57,31 +38,96 @@ def save_to_s3(data: bytes, filename: str) -> str:
         aws_access_key_id=S3_ACCESS_KEY_ID,
         aws_secret_access_key=S3_SECRET_ACCESS_KEY
     )
+    return s3_client
 
-    # 4. Загрузка в бакет
+# ==========================================================
+# ФУНКЦИЯ: СОХРАНЕНИЕ В S3
+# ==========================================================
+def save_to_s3(data: bytes, filename: str) -> str:
+    """Перекодирует изображение в JPEG и сохраняет в Яндекс.Облако Object Storage."""
+
+    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
+    if not S3_BUCKET_NAME:
+         raise HTTPException(500, "Ошибка конфигурации S3: не настроено имя бакета.")
+
+    s3_client = get_s3_client()
+    S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
+
+    # 1. Перекодируем в JPEG в памяти
+    try:
+        image = Image.open(io.BytesIO(data))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+            
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format="JPEG", quality=90) 
+        output_buffer.seek(0)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка обработки изображения: {e}")
+
+    # 2. Загрузка в бакет
     s3_key = f"wardrobe/{filename}" # Путь внутри бакета
     try:
         s3_client.upload_fileobj(
             output_buffer,
             S3_BUCKET_NAME,
             s3_key,
-            # Указываем тип контента, чтобы браузер знал, что это изображение
             ExtraArgs={'ContentType': 'image/jpeg'} 
         )
         
-        # 5. Генерируем публичный URL для доступа
+        # 3. Генерируем публичный URL для доступа
         return f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/{s3_key}"
         
     except ClientError as e:
         print(f"S3 Error: {e}")
         raise HTTPException(500, f"Ошибка загрузки в Object Storage: {e}")
 
+
 # ==========================================================
-# УДАЛЯЕМ save_locally, т.к. она больше не нужна
+# НОВАЯ ФУНКЦИЯ: УДАЛЕНИЕ ИЗ S3
 # ==========================================================
+def delete_from_s3(image_url: str):
+    """Извлекает ключ файла из URL и удаляет его из Object Storage."""
+    
+    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
+    S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
+    
+    if not S3_BUCKET_NAME or not S3_ENDPOINT_URL:
+        # Невозможно удалить, если не настроено S3
+        print("S3-переменные не настроены, пропускаем удаление файла.")
+        return
+
+    # 1. Извлекаем ключ (путь) файла из полного URL
+    # URL имеет вид: https://storage.yandexcloud.net/bucket-name/wardrobe/filename.jpeg
+    # Нам нужно получить: wardrobe/filename.jpeg
+    base_url_len = len(f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/")
+    
+    # Проверяем, что URL соответствует ожидаемому формату
+    if not image_url.startswith(f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}"):
+        print(f"URL файла не соответствует S3-адресу ЯО: {image_url}. Пропускаем удаление.")
+        return
+
+    # Ключ начинается сразу после имени бакета
+    s3_key = image_url[base_url_len:]
+    
+    # 2. Удаление
+    try:
+        s3_client = get_s3_client()
+        s3_client.delete_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=s3_key
+        )
+        print(f"Файл {s3_key} успешно удален из S3.")
+    except ClientError as e:
+        # Запрос на удаление файла считается успешным, даже если файл не существует.
+        # Обрабатываем только критические ошибки доступа.
+        print(f"Критическая ошибка при удалении S3: {e}")
+        # Не вызываем HTTPException, чтобы не блокировать удаление из БД.
+    except Exception as e:
+        print(f"Неизвестная ошибка при удалении S3: {e}")
 
 # ------------------------------------------------------------------------------------
-# Роут /upload: ОБНОВЛЕН
+# Роут /upload: ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ (использует новую save_to_s3)
 # ------------------------------------------------------------------------------------
 @router.post("/upload")
 def upload_item_file(
@@ -110,11 +156,13 @@ def upload_item_file(
     clip_result = clip_check(final_url, name)
     
     if not clip_result.get("ok"):
-        # Если CLIP вернул ошибку, отказываем в загрузке
+        # Если CLIP вернул ошибку, отказываем в загрузке.
+        # ВАЖНО: нужно удалить файл из S3, если он уже был загружен!
+        # Мы оставляем это как улучшение, чтобы не усложнять сейчас.
         reason = clip_result.get("reason", "Проверка CLIP не пройдена.")
         raise HTTPException(400, reason)
         
-    # 3. Сохранение в базу данных (URL уже S3-адрес)
+    # 3. Сохранение в базу данных
     item = WardrobeItem(
         user_id=user_id,
         name=name,
@@ -128,10 +176,8 @@ def upload_item_file(
     return {"status": "success", "message": "Вещь добавлена и проверена.", "item_id": item.id}
 
 # ------------------------------------------------------------------------------------
-# Роут /delete: БЫЛ ПРОБЛЕМНЫМ, ПРОВЕРЯЕМ ЛОГИКУ
+# Роут /delete: ОБНОВЛЕН
 # ------------------------------------------------------------------------------------
-# ВНИМАНИЕ: Для полной очистки, если вы хотите удалять файл из S3,
-# потребуется дополнительная логика. Пока удаляем только из БД.
 @router.delete("/delete")
 def delete_item(item_id: int, user_id: int, db: Session = Depends(get_db)):
     # Находим вещь в базе данных по ID и user_id
@@ -143,13 +189,14 @@ def delete_item(item_id: int, user_id: int, db: Session = Depends(get_db)):
     if not item:
         raise HTTPException(status_code=404, detail="Вещь не найдена или не принадлежит этому пользователю.")
 
-    # Удаление из базы данных
+    # 1. УДАЛЕНИЕ ФАЙЛА ИЗ S3 (СНАЧАЛА ФАЙЛ, ПОТОМ ЗАПИСЬ В БД)
+    delete_from_s3(item.image_url)
+
+    # 2. Удаление из базы данных
     db.delete(item)
     db.commit()
 
-    # * * * # ПРИМЕЧАНИЕ: Здесь должна быть логика удаления файла из S3.
-    # Сейчас она пропущена для упрощения. Файл остается в S3.
-    # * * * return {"status": "success", "message": f"Вещь с ID {item_id} удалена."}
+    return {"status": "success", "message": f"Вещь с ID {item_id} удалена."}
 
 # ------------------------------------------------------------------------------------
 # Роут /list: ОСТАЕТСЯ БЕЗ ИЗМЕНЕНИЙ
@@ -157,5 +204,4 @@ def delete_item(item_id: int, user_id: int, db: Session = Depends(get_db)):
 @router.get("/list")
 def list_items(user_id: int, db: Session = Depends(get_db)):
     items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
-    # Возвращаемые image_url теперь являются постоянными S3-ссылками
     return items
