@@ -11,3 +11,5 @@ filetype
 beautifulsoup4
 boto3
 botocore
+python-jose[cryptography]
+passlib[bcrypt]
