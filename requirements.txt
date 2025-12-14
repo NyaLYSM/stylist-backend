@@ -10,3 +10,4 @@ Pillow
 filetype
 beautifulsoup4
 boto3
+botocore
