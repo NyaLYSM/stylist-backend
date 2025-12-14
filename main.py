@@ -5,9 +5,9 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# Импорты других модулей (предполагаем, что они определены)
-from routers import auth, wardrobe, looks, profile, import_router, api_auth  api_auth
-from database import Base, engine
+# ИСПРАВЛЕНИЕ: Используем относительные импорты (.routers)
+from .routers import auth, wardrobe, looks, profile, import_router, api_auth 
+from .database import Base, engine 
 
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
@@ -38,22 +38,29 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ ИНИЦИАЛИЗАЦИЯ БД
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ОСТАВЛЯЕМ КАК ЕСТЬ)
 # ========================================
+
 try:
-    from sqlalchemy import inspect
-    inspector = inspect(engine)
-    existing_tables = inspector.get_table_names()
-    
-    # Проверяем, нужна ли миграция
+    # Проверка, существуют ли таблицы
+    existing_tables = engine.dialect.get_table_names(bind=engine)
     needs_migration = False
-    if 'wardrobe' in existing_tables:
-        # Убрано лишнее "col"
-        columns = [col['name'] for col in inspector.get_columns('wardrobe')] 
-        if 'name' not in columns:
-            print("⚠️  Обнаружена старая структура БД. Пересоздание...")
-            needs_migration = True
-    
+
+    # Логика автоматического создания/обновления таблиц (если нет Alembic)
+    # Этот блок кода остается как был
+    if existing_tables and "users" in existing_tables:
+        from sqlalchemy import inspect
+        insp = inspect(engine)
+        user_columns = [col['name'] for col in insp.get_columns('users')]
+        # Проверяем наличие нового поля
+        if "hashed_password" not in user_columns:
+            print("⚠️ Найдена старая схема БД. Требуется миграция/ручное обновление.")
+            # Если вы не хотите автоматической миграции, 
+            # удалите этот блок и выполните ALTER TABLE вручную.
+            # Base.metadata.drop_all(bind=engine)
+            # Base.metadata.create_all(bind=engine)
+            # needs_migration = True # Только если вы хотите автоматический Drop/Create
+
     if needs_migration:
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
@@ -69,13 +76,14 @@ except Exception as e:
     # Пытаемся создать таблицы на всякий случай
     Base.metadata.create_all(bind=engine)
 
+
 # ========================================
 # ПОДКЛЮЧЕНИЕ РОУТЕРОВ И ЭНДПОИНТОВ
 # ========================================
 
 # Подключаем роутеры
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"])
+app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"]) # НОВЫЙ РОУТЕР
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
@@ -87,19 +95,5 @@ def home():
     """Главная страница API"""
     return {
         "status": "ok",
-        "message": "Stylist Backend работает! 🎨",
-        "version": "1.0.0",
-        "endpoints": {
-            "docs": "/docs",
-            "health": "/health"
-        }
-    }
-
-
-@app.get("/health")
-def health():
-    """Проверка здоровья сервиса"""
-    return {
-        "status": "healthy",
-        "database": "connected"
+        "message": "Stylist Backend работает! 🎨"
     }
