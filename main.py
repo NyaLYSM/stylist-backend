@@ -1,13 +1,10 @@
+import os
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from database import Base, engine
-from routers import auth, wardrobe, looks, profile, import_router
 
-import models
-import os
-
+app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
 # ========================================
@@ -19,8 +16,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# 2. Затем используем app, например, для подключения статики
-# создаём папку static/images если нет
 os.makedirs("static/images", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
