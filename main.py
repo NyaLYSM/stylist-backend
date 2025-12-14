@@ -47,7 +47,7 @@ try:
     # Проверяем, нужна ли миграция
     needs_migration = False
     if 'wardrobe' in existing_tables:
-        columns = [col['name'] for col col in inspector.get_columns('wardrobe')]
+        columns = [col['name'] for col in inspector.get_columns('wardrobe')] # <-- ИСПРАВЛЕНО
         if 'name' not in columns:
             print("⚠️  Обнаружена старая структура БД. Пересоздание...")
             needs_migration = True
