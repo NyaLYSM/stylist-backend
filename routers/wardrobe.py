@@ -96,10 +96,15 @@ def upload_item_file(
     final_url = save_locally(data, fname) 
 
     # Проверка CLIP
-    clip_result = clip_check(final_url, name)
-    if not clip_result["ok"]:
-        # Если CLIP выдает ошибку, то отклоняем
+    # Проверка CLIP
+clip_result = clip_check(final_url, name)
+
+    # ⚠️ Временная логика, если clip_check возвращает только bool.
+    # Если clip_result — это словарь, этот блок все равно будет работать.
+    if isinstance(clip_result, dict) and not clip_result["ok"]:
         raise HTTPException(400, clip_result["reason"])
+    elif clip_result is False:
+        raise HTTPException(400, "Проверка CLIP не пройдена. Пожалуйста, уберите запрещенные элементы.")
         
     # Сохранение в базу данных
     item = WardrobeItem(
