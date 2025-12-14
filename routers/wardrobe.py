@@ -1,3 +1,5 @@
+# routers/wardrobe.py
+
 from datetime import datetime
 import io
 import os
@@ -7,20 +9,24 @@ from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
 from sqlalchemy.orm import Session
 from PIL import Image
 
-# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете)
+# НОВЫЕ ИМПОРТЫ ДЛЯ S3
 import boto3
 from botocore.exceptions import ClientError
 
-# ИСПРАВЛЕНО: Абсолютные импорты
+# ==========================================================
+# ИСПРАВЛЕННЫЕ АБСОЛЮТНЫЕ ИМПОРТЫ
+# ==========================================================
 from database import get_db
 from models import WardrobeItem 
 from utils.clip_helper import clip_check, CLIP_URL 
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name, validate_image_bytes
-from utils.auth import get_current_user_id # <--- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
+from utils.auth import get_current_user_id # КРИТИЧЕСКИ ВАЖНЫЙ ИМПОРТ
+
+router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
 
 # ==========================================================
-# ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3 
+# ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3
 # ==========================================================
 def get_s3_client():
     """Возвращает настроенный клиент Boto3 S3."""
@@ -29,7 +35,7 @@ def get_s3_client():
     S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
 
     if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL]):
-        raise HTTPException(500, "Ошибка конфигурации S3: не настроены переменные окружения.")
+        raise HTTPException(status_code=500, detail="Ошибка конфигурации S3: не настроены переменные окружения.")
         
     session = boto3.session.Session()
     s3_client = session.client(
@@ -40,99 +46,60 @@ def get_s3_client():
     )
     return s3_client
 
-router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
 
-def save_to_s3(data: bytes, filename: str) -> str:
-    """Перекодирует изображение в JPEG и сохраняет в Яндекс.Облако Object Storage."""
+# ------------------------------------------------------------------------------------
+# Роут /all: Получить все вещи пользователя
+# ------------------------------------------------------------------------------------
+@router.get("/all")
+def get_all_items(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id) # Безопасное получение ID
+):
+    items = db.query(WardrobeItem).filter(
+        WardrobeItem.user_id == user_id
+    ).order_by(WardrobeItem.id.desc()).all()
     
-    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
-    if not S3_BUCKET_NAME:
-         raise HTTPException(500, "Ошибка конфигурации S3: не настроено имя бакета.")
+    return {"items": items}
 
-    s3_client = get_s3_client()
-    S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
 
-    # 1. Обработка изображения (конвертация в JPEG)
-    try:
-        image = Image.open(io.BytesIO(data))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-            
-        output_buffer = io.BytesIO()
-        image.save(output_buffer, format="JPEG", quality=90) 
-        output_buffer.seek(0)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка обработки изображения: {e}")
-
-    # 2. Загрузка в бакет
-    s3_key = f"wardrobe/{filename}"
-    try:
-        s3_client.upload_fileobj(
-            output_buffer,
-            S3_BUCKET_NAME,
-            s3_key,
-            ExtraArgs={'ContentType': 'image/jpeg'} 
-        )
-        # Возвращаем публичный URL
-        return f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/{s3_key}"
-        
-    except ClientError as e:
-        print(f"S3 Error: {e}")
-        raise HTTPException(500, f"Ошибка загрузки в Object Storage: {e}")
-
-def delete_from_s3(image_url: str):
-    """Удаляет файл из Object Storage по его URL."""
-    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
-    S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
-    
-    if not S3_BUCKET_NAME or not S3_ENDPOINT_URL:
-        return
-
-    # Извлекаем ключ файла (всё после имени бакета)
-    base_url = f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/"
-    if not image_url.startswith(base_url):
-        return
-
-    s3_key = image_url.replace(base_url, "")
-    
-    try:
-        s3_client = get_s3_client()
-        s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=s3_key)
-    except Exception as e:
-        print(f"Ошибка при удалении из S3: {e}")
-
-# ==========================================================
-# 🚦 РОУТЫ API
-# ==========================================================
-
-@router.post("/upload")
-def upload_item_file(
+# ------------------------------------------------------------------------------------
+# Роут /add: Добавить вещь
+# ------------------------------------------------------------------------------------
+@router.post("/add")
+async def add_item(
     name: str = Form(...),
-    file: UploadFile = File(...),
+    image: UploadFile = File(...),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id) # Безопасное получение ID
 ):
     # 1. Валидация имени
-    if not (1 <= len(name) <= 100):
-        raise HTTPException(400, "Название должно быть от 1 до 100 символов.")
+    valid_name, name_error = validate_name(name)
+    if not valid_name:
+        raise HTTPException(400, f"Ошибка в названии: {name_error}")
     
-    # 2. Чтение файла
+    # Очистка имени
+    name = name.strip()
+
+    # 2. Чтение и валидация файла
+    file_bytes = await image.read()
+    valid_image, image_error = validate_image_bytes(file_bytes)
+    if not valid_image:
+        raise HTTPException(400, f"Ошибка в файле: {image_error}")
+
+    # 3. Сохранение файла (S3 или локально)
     try:
-        data = file.file.read()
-    except Exception:
-        raise HTTPException(400, "Не удалось прочитать файл.")
+        final_url = save_image(image.filename, file_bytes)
+    except Exception as e:
+        # Обычно это ошибка S3 или прав доступа к файловой системе
+        raise HTTPException(500, f"Не удалось сохранить файл: {str(e)}")
 
-    # 3. Сохранение в S3
-    # Генерируем уникальное имя файла: user_id + timestamp
-    fname = f"{user_id}_{int(datetime.utcnow().timestamp())}.jpeg"
-    final_url = save_to_s3(data, fname)
 
-    # 4. Проверка через CLIP (AI)
+    # 4. Проверка через CLIP (может занять время)
     clip_result = clip_check(final_url, name)
     
     if not clip_result.get("ok"):
-        # Если проверка не пройдена, удаляем файл из S3, чтобы не мусорить
-        delete_from_s3(final_url)
+        # Если проверка не пройдена, удаляем файл
+        delete_image(final_url) 
         reason = clip_result.get("reason", "Проверка CLIP не пройдена.")
         raise HTTPException(400, reason)
         
@@ -147,9 +114,12 @@ def upload_item_file(
     db.commit()
     db.refresh(item)
     
-    return {"status": "success", "message": "Вещь добавлена.", "item_id": item.id, "image_url": final_url}
+    return {"status": "success", "message": "Вещь добавлена и проверена.", "item_id": item.id, "image_url": final_url}
 
 
+# ------------------------------------------------------------------------------------
+# Роут /delete: Удалить вещь
+# ------------------------------------------------------------------------------------
 @router.delete("/delete")
 def delete_item(
     item_id: int, 
@@ -163,22 +133,15 @@ def delete_item(
     ).first()
 
     if not item:
-        raise HTTPException(status_code=404, detail="Вещь не найдена.")
+        raise HTTPException(status_code=404, detail="Вещь не найдена или не принадлежит этому пользователю.")
 
-    # 1. Удаляем файл из облака
-    delete_from_s3(item.image_url)
+    # 1. Удаляем файл из облака/локальной папки
+    if not delete_image(item.image_url):
+        # Логгируем ошибку, но продолжаем, так как запись в БД важнее
+        print(f"⚠️ Ошибка при удалении файла: {item.image_url}")
 
-    # 2. Удаляем запись из БД
+    # 2. Удаление из базы данных
     db.delete(item)
     db.commit()
 
-    return {"status": "success", "message": f"Вещь удалена."}
-
-
-@router.get("/list")
-def list_items(
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id) # Безопасное получение ID
-):
-    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
-    return items
+    return {"status": "success", "message": f"Вещь с ID {item_id} удалена."}
