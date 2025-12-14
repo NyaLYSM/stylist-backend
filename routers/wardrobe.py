@@ -7,19 +7,17 @@ from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
 from sqlalchemy.orm import Session
 from PIL import Image
 
-# ИСПРАВЛЕНО: Абсолютные импорты
-from database import get_db
-from models import WardrobeItem
-from utils.clip_helper import clip_check, CLIP_URL 
-from utils.storage import delete_image, save_image
-from utils.validators import validate_name, validate_image_bytes
-
-# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете) - Оставляем, так как они нужны в теле кода
+# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете)
 import boto3
 from botocore.exceptions import ClientError
 
-
-router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
+# ИСПРАВЛЕНО: Абсолютные импорты
+from database import get_db
+from models import WardrobeItem 
+from utils.clip_helper import clip_check, CLIP_URL 
+from utils.storage import delete_image, save_image
+from utils.validators import validate_name, validate_image_bytes
+from utils.auth import get_current_user_id # <--- ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН
 
 # ==========================================================
 # ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3 
@@ -41,6 +39,8 @@ def get_s3_client():
         aws_secret_access_key=S3_SECRET_ACCESS_KEY
     )
     return s3_client
+
+router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
 
 def save_to_s3(data: bytes, filename: str) -> str:
     """Перекодирует изображение в JPEG и сохраняет в Яндекс.Облако Object Storage."""
