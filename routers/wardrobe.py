@@ -1,3 +1,4 @@
+# routers/wardrobe.py
 import io 
 import requests
 import filetype
@@ -20,7 +21,6 @@ router = APIRouter()
 UPLOAD_DIR = "static/uploads" # Новая папка для хранения на сервере
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
 ALLOWED_MIMES = ("image/jpeg", "image/png") 
-
 # Список запрещенных слов для валидации названия
 BLACKLIST_WORDS = ["порно", "секс", "насилие", "guns", "оружие", "naked", "erotic", "porn"]
 
@@ -97,16 +97,18 @@ def upload_item_file(
 
     # Проверка CLIP
     clip_result = clip_check(final_url, name)
-    
-    # ИСПРАВЛЕНИЕ: Проверяем, что нам вернула функция clip_check. 
-    # Если она вернула bool (False), или словарь с "ok": False, отклоняем.
-    if isinstance(clip_result, dict):
-        if not clip_result.get("ok", True):
-            # Если это словарь с ошибкой
-            raise HTTPException(400, clip_result.get("reason", "Проверка CLIP не пройдена"))
-    elif clip_result is False:
-        # Если это просто булево значение False
-        raise HTTPException(400, "Проверка CLIP не пройдена. Пожалуйста, уберите запрещенные элементы.")
+
+    if not clip_result.get("ok"):
+        reason = clip_result.get("reason", "Проверка CLIP не пройдена.")
+        
+        # Если это ошибка подключения к сервису, мы игнорируем ее (временно для Render)
+        if "Connection Error" in reason:
+            print(f"ПРЕДУПРЕЖДЕНИЕ: Проверка CLIP пропущена из-за ошибки подключения: {reason}")
+            # ПРОДОЛЖАЕМ выполнение, игнорируя результат CLIP
+            pass
+        else:
+            # Если это ошибка, связанная с контентом (например, NSFW), мы выбрасываем 400
+            raise HTTPException(400, reason)
         
     # Сохранение в базу данных
     item = WardrobeItem(
