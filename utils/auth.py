@@ -6,22 +6,23 @@ from typing import Optional
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
-# ИСПРАВЛЕНИЕ: Импорты FastAPI должны быть на уровне модуля (в начале файла), 
-# чтобы избежать NameError при определении функции get_current_user_id.
+# ИСПРАВЛЕНИЕ: Эти импорты должны быть здесь, на уровне модуля!
 from fastapi import Header, HTTPException, Depends 
-from starlette.status import HTTP_401_UNAUTHORIZED # Добавим для явного статуса, хотя HTTPException тоже работает
+from starlette.status import HTTP_401_UNAUTHORIZED 
+
 
 # 1. Конфигурация хеширования паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # 2. Конфигурация JWT
-# Ключ теперь берется только из переменной окружения
+# Ключ берется из переменной окружения Render.
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY") 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 
 
-# Проверка на случай, если переменная не установлена (хотя вы ее установили)
+# Критическая проверка безопасности
 if not SECRET_KEY:
+    # Хотя вы установили ключ, эта проверка важна.
     raise ValueError("JWT_SECRET_KEY не установлен в переменных окружения. JWT не может быть безопасно сгенерирован/проверен.")
 
 
