@@ -1,6 +1,6 @@
 # stylist-backend/main.py
 
-import os # <-- Добавлен недостающий импорт
+import os
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +13,7 @@ from database import Base, engine # <-- Предполагаем, что эти 
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
 # ========================================
 
-# 1. Инициализируем приложение
+# 1. Инициализируем приложение ОДИН РАЗ
 app = FastAPI(
     title="Stylist Backend API",
     description="Backend для AI Стилист телеграм бота",
@@ -24,6 +24,7 @@ app = FastAPI(
 # создаём папку static/images если нет
 os.makedirs("static/images", exist_ok=True)
 # ВАЖНО: Папка "static" должна существовать в корне проекта!
+# Мы используем app, который только что инициализировали.
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # CORS - разрешаем все источники для WebApp
@@ -47,7 +48,8 @@ try:
     # Проверяем, нужна ли миграция
     needs_migration = False
     if 'wardrobe' in existing_tables:
-        columns = [col['name'] for col in inspector.get_columns('wardrobe')] # <-- ИСПРАВЛЕНО
+        # Убрано лишнее "col"
+        columns = [col['name'] for col in inspector.get_columns('wardrobe')] 
         if 'name' not in columns:
             print("⚠️  Обнаружена старая структура БД. Пересоздание...")
             needs_migration = True
