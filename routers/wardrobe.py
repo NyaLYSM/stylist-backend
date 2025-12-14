@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
 from sqlalchemy.orm import Session
 from PIL import Image
 
-# НОВЫЕ ИМПОРТЫ ДЛЯ S3
+# НОВЫЕ ИМПОРТЫ ДЛЯ S3 (если используете)
 import boto3
 from botocore.exceptions import ClientError
 
@@ -21,12 +21,13 @@ from models import WardrobeItem
 from utils.clip_helper import clip_check, CLIP_URL 
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name, validate_image_bytes
-from utils.auth import get_current_user_id # КРИТИЧЕСКИ ВАЖНЫЙ ИМПОРТ
+# <--- ВАЖНО: ЭТОТ ИМПОРТ РЕШАЕТ ПРОБЛЕМУ NameError
+from utils.auth import get_current_user_id 
 
 router = APIRouter(prefix="/wardrobe", tags=["Wardrobe"])
 
 # ==========================================================
-# ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3
+# ФУНКЦИЯ: ПОДКЛЮЧЕНИЕ КЛИЕНТА S3 (если используется S3)
 # ==========================================================
 def get_s3_client():
     """Возвращает настроенный клиент Boto3 S3."""
@@ -35,6 +36,8 @@ def get_s3_client():
     S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL")
 
     if not all([S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL]):
+        # В реальной жизни, возможно, стоит вернуть None или заглушку, 
+        # но для деплоя с S3 это должно быть
         raise HTTPException(status_code=500, detail="Ошибка конфигурации S3: не настроены переменные окружения.")
         
     session = boto3.session.Session()
@@ -53,7 +56,8 @@ def get_s3_client():
 @router.get("/all")
 def get_all_items(
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id) # Безопасное получение ID
+    #user_id используется КАК ПАРАМЕТР ФУНКЦИИ
+    user_id: int = Depends(get_current_user_id) 
 ):
     items = db.query(WardrobeItem).filter(
         WardrobeItem.user_id == user_id
@@ -70,7 +74,7 @@ async def add_item(
     name: str = Form(...),
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id) # Безопасное получение ID
+    user_id: int = Depends(get_current_user_id)
 ):
     # 1. Валидация имени
     valid_name, name_error = validate_name(name)
@@ -137,7 +141,6 @@ def delete_item(
 
     # 1. Удаляем файл из облака/локальной папки
     if not delete_image(item.image_url):
-        # Логгируем ошибку, но продолжаем, так как запись в БД важнее
         print(f"⚠️ Ошибка при удалении файла: {item.image_url}")
 
     # 2. Удаление из базы данных
