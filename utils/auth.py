@@ -1,4 +1,3 @@
-# utils/auth.py
 import os
 from datetime import datetime, timedelta
 from typing import Optional
@@ -6,7 +5,7 @@ from typing import Optional
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
-# ИСПРАВЛЕНИЕ: Эти импорты должны быть здесь, на уровне модуля!
+# ИСПРАВЛЕНИЕ: Эти импорты должны быть на уровне модуля (в начале файла)!
 from fastapi import Header, HTTPException, Depends 
 from starlette.status import HTTP_401_UNAUTHORIZED 
 
@@ -15,14 +14,13 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # 2. Конфигурация JWT
-# Ключ берется из переменной окружения Render.
+# Ключ берется только из переменной окружения.
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY") 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 
 
 # Критическая проверка безопасности
 if not SECRET_KEY:
-    # Хотя вы установили ключ, эта проверка важна.
     raise ValueError("JWT_SECRET_KEY не установлен в переменных окружения. JWT не может быть безопасно сгенерирован/проверен.")
 
 
@@ -58,6 +56,8 @@ def decode_access_token(token: str) -> Optional[dict]:
 # Функция для защиты роутов
 def get_current_user_id(Authorization: str = Header(..., description="Bearer <token>")) -> int:
     """Извлекает и проверяет токен, возвращает user_id (tg_id)."""
+    
+    # Внутренний импорт FastAPI удален
     
     if not Authorization or not Authorization.startswith("Bearer "):
         raise HTTPException(
