@@ -14,7 +14,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # 2. Конфигурация JWT
-# Ключ берется только из переменной окружения.
+# Ключ берется из переменной окружения Render.
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY") 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 
