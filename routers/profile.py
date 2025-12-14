@@ -2,13 +2,13 @@
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
-from database import get_db
+from database import get_db # <-- Абсолютный импорт
 # ИСПРАВЛЕНИЕ: Замена относительных импортов на абсолютные
-from models import User, WardrobeItem, Look, Analysis
-from utils.auth import get_current_user_id 
+from models import User, WardrobeItem, Look, Analysis # <-- Абсолютный импорт
+from utils.auth import get_current_user_id # <-- Абсолютный импорт
 from datetime import datetime
 
-router = APIRouter(prefix="/profile", tags=["Profile"]) # Добавлен префикс для ясности
+router = APIRouter(prefix="/profile", tags=["Profile"]) 
 
 # Получить профиль пользователя + последние 5 анализов
 @router.get("/") 
@@ -36,7 +36,7 @@ def get_profile(
         "stats": {
             "wardrobe_items": wardrobe_count,
             "looks": looks_count,
-            "analyses": len(analyses) # Общее число анализов можно добавить, если нужно
+            "analyses": len(analyses)
         },
         "latest_analyses": analyses
     }
