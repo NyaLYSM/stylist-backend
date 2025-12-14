@@ -2,7 +2,7 @@ import requests
 from requests.exceptions import ConnectionError, HTTPError
 
 # Локальный адрес для вашего сервиса на ПК
-CLIP_URL = "http://127.0.0.1:8001/check"
+CLIP_URL = "https://bba4bk1mjete8virsbkp.containers.yandexcloud.net"
 
 def clip_check(image_url: str, title: str) -> dict:
     """Проверяет изображение через внешний CLIP-сервис и всегда возвращает словарь."""
