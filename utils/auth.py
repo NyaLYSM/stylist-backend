@@ -54,12 +54,19 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 # Функция для защиты роутов
-def get_current_user_id(Authorization: str = Header(..., description="Bearer <token>")) -> int:
+def get_current_user_id(Authorization: Optional[str] = Header(None, description="Bearer <token>")) -> int:
     """Извлекает и проверяет токен, возвращает user_id (tg_id)."""
     
-    # Внутренний импорт FastAPI удален
-    
-    if not Authorization or not Authorization.startswith("Bearer "):
+    # 1. Проверяем, был ли заголовок вообще предоставлен
+    if not Authorization:
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED, 
+            detail="Отсутствует заголовок авторизации.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    # 2. Проверяем формат
+    if not Authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED, 
             detail="Неверный формат токена. Ожидается 'Bearer <token>'.",
