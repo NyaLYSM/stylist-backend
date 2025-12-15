@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, Text, DateTime
+from sqlafrom sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, Text, DateTime
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -13,6 +13,9 @@ class User(Base):
     hashed_password = Column(String, nullable=True) 
     
     first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True) # <-- ДОБАВЛЕНО
+    last_login = Column(DateTime, default=datetime.utcnow, nullable=True) # <-- ДОБАВЛЕНО
+    
     registered_at = Column(DateTime, default=datetime.utcnow)
     subscription_type = Column(String, default="free") 
     subscription_until = Column(DateTime, nullable=True)
