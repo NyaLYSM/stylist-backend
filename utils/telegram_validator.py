@@ -14,6 +14,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN") # <-- ДОБАВИТЬ
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не установлен! Невозможно проверить initData Telegram.")
+
+print(f"DEBUG: BOT_TOKEN READ (Length): {len(BOT_TOKEN)}")
+print(f"DEBUG: BOT_TOKEN READ (First 5 chars): {BOT_TOKEN[:5]}")
     
 def validate_init_data(init_data: str) -> Optional[int]:
     """
