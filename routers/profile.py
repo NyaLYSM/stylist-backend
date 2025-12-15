@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import List, Optional
 
 from database import get_db
+# ИСПРАВЛЕНИЕ 1: Изменяем относительные импорты на абсолютные
 from models import User, WardrobeItem, Look, Analysis 
 from utils.auth import get_current_user_id 
 
+# ИСПРАВЛЕНИЕ 2: Инициализируем APIRouter
 router = APIRouter(tags=["Profile"])
 
 # ------------------------------------------------------------------------------------
@@ -17,7 +19,7 @@ router = APIRouter(tags=["Profile"])
 @router.get("/")
 def get_profile(
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id)
+    user_id: int = Depends(get_current_user_id) # <-- ЗАЩИТА
 ):
     user = db.query(User).filter(User.tg_id == user_id).first()
     if not user:
@@ -32,8 +34,8 @@ def get_profile(
         "user": {
             "tg_id": user.tg_id,
             "username": user.username,
-            "first_name": user.first_name, # ИСПРАВЛЕНИЕ: Используем first_name
-            "last_name": user.last_name,   # ИСПРАВЛЕНИЕ: Используем last_name
+            "first_name": user.first_name, # ИСПРАВЛЕНО
+            "last_name": user.last_name,   # ИСПРАВЛЕНО
             "last_login": user.last_login,
         },
         "latest_analyses": latest_analyses
