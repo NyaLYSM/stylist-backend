@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 from routers import auth, wardrobe, looks, profile, import_router, api_auth, tg_auth 
-from database import Base, engine
+from database import Base, engine # engine и Base остаются для возможности раскомментирования миграции
 
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
@@ -24,6 +24,16 @@ app = FastAPI(
     description="Backend для AI Стилист телеграм бота",
     version="1.0.0"
 )
+
+# ========================================
+# HEALTH CHECK (Перенесен в начало для быстрого ответа Render)
+# ========================================
+@app.get("/health", include_in_schema=False)
+def health_check():
+    """Эндпоинт для проверки работоспособности (Render Health Check)"""
+    return {"status": "ok"}
+# ========================================
+
 
 # 2. Подключение статики
 # создаём папку static/images если нет
@@ -42,41 +52,41 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ 
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО ДЛЯ УСТРАНЕНИЯ ТАЙМ-АУТА)
 # ========================================
 
-try:
-    from sqlalchemy import inspect
-    # ИСПРАВЛЕНИЕ: Используем активное подключение для инспекции БД
-    with engine.connect() as connection:
+# try:
+#     from sqlalchemy import inspect
+#     # ИСПРАВЛЕНИЕ: Используем активное подключение для инспекции БД
+#     with engine.connect() as connection:
         
-        # ИСПРАВЛЕНИЕ ОШИБКИ: PGDialect.get_table_names требует объект connection
-        existing_tables = connection.dialect.get_table_names(connection)
-        needs_migration = False
+#         # ИСПРАВЛЕНИЕ ОШИБКИ: PGDialect.get_table_names требует объект connection
+#         existing_tables = connection.dialect.get_table_names(connection)
+#         needs_migration = False
 
-        if existing_tables and "users" in existing_tables:
-            # Используем инспектор для текущего подключения
-            insp = inspect(connection)
-            user_columns = [col['name'] for col in insp.get_columns('users')]
+#         if existing_tables and "users" in existing_tables:
+#             # Используем инспектор для текущего подключения
+#             insp = inspect(connection)
+#             user_columns = [col['name'] for col in insp.get_columns('users')]
             
-            # Проверяем наличие нового поля hashed_password
-            if "hashed_password" not in user_columns:
-                print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
-                # pass остается, чтобы пропустить миграцию без Alembic
-                pass 
+#             # Проверяем наличие нового поля hashed_password
+#             if "hashed_password" not in user_columns:
+#                 print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
+#                 # pass остается, чтобы пропустить миграцию без Alembic
+#                 pass 
 
-        if not existing_tables or needs_migration:
-            # Создаем таблицы, если их нет или нужна миграция
-            Base.metadata.create_all(bind=engine)
-            print("✅ БД создана/обновлена!")
-        else:
-            print("✅ БД актуальна")
+#         if not existing_tables or needs_migration:
+#             # Создаем таблицы, если их нет или нужна миграция
+#             Base.metadata.create_all(bind=engine)
+#             print("✅ БД создана/обновлена!")
+#         else:
+#             print("✅ БД актуальна")
             
-except Exception as e:
-    print(f"⚠️  Ошибка при проверке БД: {e}")
-    # Пытаемся создать таблицы на случай, если сама проверка упала. 
-    # SQLAlchemy пропустит уже существующие таблицы.
-    Base.metadata.create_all(bind=engine)
+# except Exception as e:
+#     print(f"⚠️  Ошибка при проверке БД: {e}")
+#     # Пытаемся создать таблицы на случай, если сама проверка упала. 
+#     # SQLAlchemy пропустит уже существующие таблицы.
+#     Base.metadata.create_all(bind=engine)
 
 # ========================================
 
