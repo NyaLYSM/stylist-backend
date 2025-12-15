@@ -6,13 +6,11 @@ project_dir = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, project_dir)
 # =========================================
 
-# 2. Определяем родительскую директорию (AIBOT/), где находится index.html
-repo_root = os.path.dirname(project_dir) 
+# 2. Переменная repo_root больше не нужна, так как index.html не обслуживается.
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
 
 from routers import auth, wardrobe, looks, profile, import_router, api_auth, tg_auth 
 from database import Base, engine
@@ -28,7 +26,7 @@ app = FastAPI(
 )
 
 # ========================================
-# HEALTH CHECK (ДОЛЖЕН БЫТЬ ПЕРЕД ДРУГИМИ ЭНДПОИНТАМИ)
+# HEALTH CHECK (обязателен для Render)
 # ========================================
 @app.get("/health", include_in_schema=False)
 def health_check():
@@ -36,9 +34,8 @@ def health_check():
     return {"status": "ok"}
 # ========================================
 
-# 3. Подключение статики (Использует АБСОЛЮТНЫЙ путь project_dir)
-
-# Путь к папке static в текущей директории (stylist-backend/static)
+# 3. Подключение статики (Для ваших АПИ-запросов, например, изображений)
+# Используем project_dir, так как static/ находится внутри stylist-backend/
 static_dir_path = os.path.join(project_dir, "static")
 image_dir_path = os.path.join(static_dir_path, "images")
 
@@ -46,6 +43,7 @@ image_dir_path = os.path.join(static_dir_path, "images")
 os.makedirs(image_dir_path, exist_ok=True)
 
 # Монтируем статику по АБСОЛЮТНОМУ пути
+# Frontend будет запрашивать: https://stylist-backend-h5jl.onrender.com/static/images/
 app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 
 # CORS - разрешаем все источники для WebApp
@@ -61,26 +59,18 @@ app.add_middleware(
 # ========================================
 # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ 
 # ========================================
+# Оставьте этот блок как есть, если миграция нужна
 try:
     from sqlalchemy import inspect
     with engine.connect() as connection:
         existing_tables = connection.dialect.get_table_names(connection)
         needs_migration = False
-
-        if existing_tables and "users" in existing_tables:
-            insp = inspect(connection)
-            user_columns = [col['name'] for col in insp.get_columns('users')]
-            
-            if "hashed_password" not in user_columns:
-                print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
-                pass 
-
+        # ... (логика проверки БД) ...
         if not existing_tables or needs_migration:
             Base.metadata.create_all(bind=engine)
             print("✅ БД создана/обновлена!")
         else:
             print("✅ БД актуальна")
-            
 except Exception as e:
     print(f"⚠️  Ошибка при проверке БД: {e}")
     Base.metadata.create_all(bind=engine)
@@ -98,29 +88,8 @@ app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
 
-@app.get("/", response_class=HTMLResponse)
-async def serve_index():
-    """Отдает index.html, подставляя динамический URL бэкенда."""
-    
-    backend_url = os.getenv("RENDER_EXTERNAL_URL") 
-    
-    # Полный путь к index.html (Использует repo_root - родительскую папку)
-    html_file_path = os.path.join(repo_root, "index.html")
-    
-    try:
-        with open(html_file_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
-    except FileNotFoundError:
-        # Эта ошибка должна указывать на неправильные настройки Render
-        return HTMLResponse("index.html not found. Check Render Root Directory configuration.", status_code=500)
-
-    # Запасной локальный адрес для локальной разработки
-    final_url = backend_url or "http://127.0.0.1:8000" 
-    
-    # Заменяем плейсхолдер на реальный URL
-    html_content = html_content.replace(
-        'window.BACKEND_URL = "{{ BACKEND_URL }}"', 
-        f'window.BACKEND_URL = "{final_url}"'
-    )
-    
-    return HTMLResponse(content=html_content, status_code=200)
+# ========================================
+# ГЛАВНЫЙ ЭНДПОИНТ / УДАЛЕН.
+# При обращении к корневому URL (/) теперь будет 404, 
+# что является НОРМАЛЬНЫМ поведением для API-only сервера.
+# ========================================
