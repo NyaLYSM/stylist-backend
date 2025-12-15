@@ -11,6 +11,8 @@ LOCAL_DIR = os.getenv("LOCAL_IMAGE_DIR", "static/images")  # relative to project
 S3_BUCKET = os.getenv("S3_BUCKET")
 S3_PREFIX = os.getenv("S3_PREFIX", "images/")
 
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "https://storage.yandexcloud.net")
+
 if STORAGE_TYPE == "local":
     os.makedirs(LOCAL_DIR, exist_ok=True)
 
@@ -33,6 +35,7 @@ def save_image_s3(filename: str, data: bytes) -> str:
         raise RuntimeError("S3_BUCKET не настроен")
     s3 = boto3.client(
         "s3",
+        endpoint_url=S3_ENDPOINT_URL,
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         region_name=os.getenv("AWS_REGION")
@@ -41,7 +44,7 @@ def save_image_s3(filename: str, data: bytes) -> str:
     key = f"{S3_PREFIX}{uuid.uuid4().hex}{ext}"
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=data, ACL="public-read", ContentType="image/jpeg")
     # Конструируем публичный URL (пример для AWS)
-    return f"https://{S3_BUCKET}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}"
+    return f"https://{S3_BUCKET}.storage.yandexcloud.net/{key}"
 
 
 def save_image(filename: str, data: bytes) -> str:
