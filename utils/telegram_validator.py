@@ -4,18 +4,21 @@ import hmac
 import hashlib
 import json
 import os 
-from urllib.parse import unquote_plus # Используем unquote_plus для URL-декодирования
+from urllib.parse import unquote_plus
 from typing import Optional
+import time 
 
-# Прямое получение токена из окружения
+# =================================================================
+# КОНФИГУРАЦИЯ
+# =================================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
+# Допустимое время жизни данных (например, 1 час)
+MAX_AUTH_DATE_SKEW_SECONDS = 3600 
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не установлен! Невозможно проверить initData Telegram.")
     
-# (DEBUG-логи можно удалить, т.к. мы подтвердили, что токен читается)
-# print(f"DEBUG: BOT_TOKEN READ (Length): {len(BOT_TOKEN)}")
-# print(f"DEBUG: BOT_TOKEN READ (First 5 chars): {BOT_TOKEN[:5]}")
+# =================================================================
 
 
 def validate_init_data(init_data: str) -> Optional[int]:
@@ -30,49 +33,72 @@ def validate_init_data(init_data: str) -> Optional[int]:
     check_params = []
     signature = None
     user_id = None
+    auth_date = None
     
-    # 1. Разбираем строку init_data на пары ключ=значение
+    # 1. Разбираем строку init_data
     for param in init_data.split('&'):
         try:
             key, value = param.split('=', 1)
         except ValueError:
             continue
             
-        # КРИТИЧЕСКИЙ ШАГ: URL-декодируем значение (важно для 'user' и других полей)
+        # КРИТИЧЕСКИЙ ШАГ: URL-декодируем значение (должен быть unquote_plus)
         decoded_value = unquote_plus(value) 
 
         if key == 'hash':
             signature = value
         else:
-            # Для хеширования пары должны быть key=DECODED_VALUE
+            # key=DECODED_VALUE для хеширования
             check_params.append(f"{key}={decoded_value}")
+            
+        if key == 'auth_date':
+            try:
+                auth_date = int(decoded_value)
+            except ValueError:
+                pass 
         
-        # Извлекаем user ID (для возврата)
+        # Извлекаем user ID
         if key == 'user':
             try:
-                # user-объект приходит в виде JSON
                 user_data = json.loads(decoded_value)
                 user_id = user_data.get('id')
             except Exception:
-                pass # Если user= невалидный JSON, игнорируем, но user_id остается None
+                pass 
 
     if not signature:
         return None 
     
-    # 2. Сортируем пары по алфавиту и объединяем их через \n (КЛЮЧЕВОЙ МОМЕНТ)
+    # 2. Сортируем пары по алфавиту и объединяем через \n
     check_params.sort()
     data_check_string = '\n'.join(check_params)
+    
+    # =================================================================
+    # !!! КРИТИЧЕСКИЙ ЛОГ: Показывает, что именно хешируется
+    # =================================================================
+    # Логируем только начало, чтобы не засорять логи (первые 100 символов)
+    print(f"DEBUG HASH STRING: {data_check_string[:100]}...")
+    
     
     # 3. Вычисляем HMAC-SHA256 хеш
     hmac_hash = hmac.new(
         secret_key, 
-        data_check_string.encode('utf-8'), # Кодируем строку в UTF-8
+        data_check_string.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
     
-    # 4. Сравниваем вычисленный хеш с подписью и убеждаемся, что есть ID
-    # Используем compare_digest для защиты от атак по времени
-    if hmac.compare_digest(hmac_hash, signature) and user_id is not None:
-        return user_id
-    
-    return None
+    # 4. Проверка хеша
+    if not hmac.compare_digest(hmac_hash, signature) or user_id is None:
+        return None
+        
+    # 5. Проверка времени (если хеш прошел, но данные старые)
+    if auth_date:
+        current_time_utc = int(time.time())
+        age_seconds = current_time_utc - auth_date
+        
+        print(f"DEBUG TIME: Auth Date: {auth_date}, Current UTC: {current_time_utc}, Age: {age_seconds} seconds")
+        
+        if age_seconds > MAX_AUTH_DATE_SKEW_SECONDS or age_seconds < -60:
+            print(f"DEBUG TIME: ⚠️ Хеш пройден, но данные просрочены ({age_seconds}s). Возвращаем None.")
+            return None
+            
+    return user_id
