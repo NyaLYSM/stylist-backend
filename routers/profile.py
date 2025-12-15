@@ -1,4 +1,4 @@
-# routers/profile.py (Финальное исправление)
+# routers/profile.py
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
@@ -30,12 +30,25 @@ def get_profile(
         Analysis.user_id == user_id
     ).order_by(Analysis.id.desc()).limit(5).all()
 
+    # ИСПРАВЛЕНИЕ: Динамическое создание full_name и безопасный доступ к полям
+    # Используем getattr для безопасного доступа к полям, которые могли быть только что добавлены
+    first_name = getattr(user, 'first_name', None) or ''
+    last_name = getattr(user, 'last_name', None) or ''
+    username = getattr(user, 'username', None) or ''
+    last_login = getattr(user, 'last_login', None)
+    
+    # Собираем полное имя
+    full_name = f"{first_name} {last_name}".strip()
+    # Если имени нет, используем юзернейм или ID
+    if not full_name:
+        full_name = username if username else f"User {user.tg_id}"
+
     return {
         "user": {
             "tg_id": user.tg_id,
-            "username": user.username,
-            "full_name": user.full_name,
-            "last_login": user.last_login,
+            "username": username,
+            "full_name": full_name, # <-- ИСПРАВЛЕНО
+            "last_login": last_login, # <-- Теперь безопасно извлекается
         },
         "latest_analyses": latest_analyses
     }
