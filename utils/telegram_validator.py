@@ -12,8 +12,7 @@ import time
 # КОНФИГУРАЦИЯ
 # =================================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN") 
-# Допустимое время жизни данных (например, 1 час)
-MAX_AUTH_DATE_SKEW_SECONDS = 3600 
+MAX_AUTH_DATE_SKEW_SECONDS = 3600 # Допустимое время жизни данных (1 час)
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не установлен! Невозможно проверить initData Telegram.")
@@ -24,25 +23,30 @@ if not BOT_TOKEN:
 def validate_init_data(init_data: str) -> Optional[int]:
     """
     Валидирует строку initData, полученную от Telegram WebApp, 
-    и возвращает ID пользователя (int), если подпись валидна.
+    и возвращает ID пользователя (int), если данные валидны.
     """
     
-    # Ключ для подписи - SHA256 хеш токена бота
-    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
+    # 1. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Ключ для подписи
+    # HMAC-SHA256 токена бота, используя 'WebAppData' как ключ HMAC.
+    secret_key = hmac.new(
+        'WebAppData'.encode('utf-8'), 
+        BOT_TOKEN.encode('utf-8'), 
+        hashlib.sha256
+    ).digest()
     
     check_params = []
     signature = None
     user_id = None
     auth_date = None
     
-    # 1. Разбираем строку init_data
+    # 2. Разбираем строку init_data
     for param in init_data.split('&'):
         try:
             key, value = param.split('=', 1)
         except ValueError:
             continue
             
-        # КРИТИЧЕСКИЙ ШАГ: URL-декодируем значение (должен быть unquote_plus)
+        # URL-декодируем значение
         decoded_value = unquote_plus(value) 
 
         if key == 'hash':
@@ -63,42 +67,52 @@ def validate_init_data(init_data: str) -> Optional[int]:
                 user_data = json.loads(decoded_value)
                 user_id = user_data.get('id')
             except Exception:
+                # Если JSON невалиден, это признак невалидных данных
                 pass 
 
     if not signature:
+        print("DEBUG: Signature (hash) not found in init_data.")
         return None 
     
-    # 2. Сортируем пары по алфавиту и объединяем через \n
+    # 3. Сортируем пары по алфавиту и объединяем через \n
     check_params.sort()
     data_check_string = '\n'.join(check_params)
     
     # =================================================================
     # !!! КРИТИЧЕСКИЙ ЛОГ: Показывает, что именно хешируется
     # =================================================================
-    # Логируем только начало, чтобы не засорять логи (первые 100 символов)
-    print(f"DEBUG HASH STRING: {data_check_string[:100]}...")
+    print(f"DEBUG HASH STRING: {data_check_string}")
     
     
-    # 3. Вычисляем HMAC-SHA256 хеш
+    # 4. Вычисляем HMAC-SHA256 хеш
     hmac_hash = hmac.new(
         secret_key, 
         data_check_string.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
     
-    # 4. Проверка хеша
-    if not hmac.compare_digest(hmac_hash, signature) or user_id is None:
+    # 5. Проверка хеша
+    if not hmac.compare_digest(hmac_hash, signature):
+        # Дополнительная информация в логах, если хеш не совпал
+        print(f"DEBUG HASH FAILURE: Computed Hash: {hmac_hash}")
+        print(f"DEBUG HASH FAILURE: Received Hash: {signature}")
         return None
-        
-    # 5. Проверка времени (если хеш прошел, но данные старые)
+    
+    # 6. Проверка времени (если хеш прошел)
     if auth_date:
         current_time_utc = int(time.time())
         age_seconds = current_time_utc - auth_date
         
-        print(f"DEBUG TIME: Auth Date: {auth_date}, Current UTC: {current_time_utc}, Age: {age_seconds} seconds")
+        print(f"DEBUG TIME: Auth Date: {auth_date} (TG time), Current UTC: {current_time_utc} (Server time), Age: {age_seconds} seconds")
         
-        if age_seconds > MAX_AUTH_DATE_SKEW_SECONDS or age_seconds < -60:
-            print(f"DEBUG TIME: ⚠️ Хеш пройден, но данные просрочены ({age_seconds}s). Возвращаем None.")
+        # Если данные слишком старые или будущее время (расхождение)
+        if age_seconds > MAX_AUTH_DATE_SKEW_SECONDS or age_seconds < -60: 
+            print(f"DEBUG TIME: ⚠️ Хеш пройден, но данные просрочены ({age_seconds}s).")
             return None
             
-    return user_id
+    # 7. Успех
+    if user_id is not None:
+        print(f"DEBUG SUCCESS: Hash passed! User ID: {user_id}")
+        return user_id
+    
+    return None
