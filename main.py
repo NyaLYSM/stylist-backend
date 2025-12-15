@@ -2,9 +2,11 @@ import sys
 import os
 
 project_root = os.path.abspath(os.path.dirname(__file__))
-
 sys.path.insert(0, project_root)
 # =========================================
+
+# Определяем корневой путь репозитория (на один уровень выше, чем main.py)
+repo_root = os.path.dirname(project_root) 
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
@@ -12,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 from routers import auth, wardrobe, looks, profile, import_router, api_auth, tg_auth 
-from database import Base, engine # engine и Base остаются для возможности раскомментирования миграции
+from database import Base, engine 
 
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
@@ -26,7 +28,7 @@ app = FastAPI(
 )
 
 # ========================================
-# HEALTH CHECK (Перенесен в начало для быстрого ответа Render)
+# HEALTH CHECK (Успешно работает, оставлен в начале)
 # ========================================
 @app.get("/health", include_in_schema=False)
 def health_check():
@@ -35,11 +37,13 @@ def health_check():
 # ========================================
 
 
-# 2. Подключение статики
+# 2. Подключение статики (ИСПРАВЛЕНО: использует полный путь от корня репозитория)
+static_dir_path = os.path.join(repo_root, "static")
+
 # создаём папку static/images если нет
-os.makedirs("static/images", exist_ok=True)
+os.makedirs(os.path.join(static_dir_path, "images"), exist_ok=True)
 # ВАЖНО: Папка "static" должна существовать в корне проекта!
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 
 # CORS - разрешаем все источники для WebApp
 app.add_middleware(
@@ -52,42 +56,9 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО ДЛЯ УСТРАНЕНИЯ ТАЙМ-АУТА)
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО)
 # ========================================
-
-# try:
-#     from sqlalchemy import inspect
-#     # ИСПРАВЛЕНИЕ: Используем активное подключение для инспекции БД
-#     with engine.connect() as connection:
-        
-#         # ИСПРАВЛЕНИЕ ОШИБКИ: PGDialect.get_table_names требует объект connection
-#         existing_tables = connection.dialect.get_table_names(connection)
-#         needs_migration = False
-
-#         if existing_tables and "users" in existing_tables:
-#             # Используем инспектор для текущего подключения
-#             insp = inspect(connection)
-#             user_columns = [col['name'] for col in insp.get_columns('users')]
-            
-#             # Проверяем наличие нового поля hashed_password
-#             if "hashed_password" not in user_columns:
-#                 print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
-#                 # pass остается, чтобы пропустить миграцию без Alembic
-#                 pass 
-
-#         if not existing_tables or needs_migration:
-#             # Создаем таблицы, если их нет или нужна миграция
-#             Base.metadata.create_all(bind=engine)
-#             print("✅ БД создана/обновлена!")
-#         else:
-#             print("✅ БД актуальна")
-            
-# except Exception as e:
-#     print(f"⚠️  Ошибка при проверке БД: {e}")
-#     # Пытаемся создать таблицы на случай, если сама проверка упала. 
-#     # SQLAlchemy пропустит уже существующие таблицы.
-#     Base.metadata.create_all(bind=engine)
-
+# КОД МИГРАЦИИ ЗАКОММЕНТИРОВАН, чтобы избежать тайм-аута при запуске. 
 # ========================================
 
 
@@ -111,18 +82,14 @@ async def serve_index():
     # RENDER_EXTERNAL_URL - переменная, которую Render устанавливает автоматически
     backend_url = os.getenv("RENDER_EXTERNAL_URL") 
     
-    # ============== ИСПРАВЛЕНИЕ ПУТИ К ФАЙЛУ ==============
-    # 1. Определяем директорию, где находится main.py
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # 2. Определяем родительскую директорию (Корень репозитория)
-    repo_root = os.path.dirname(current_dir)
-    # 3. Полный путь к index.html
+    # ============== ИСПРАВЛЕНИЕ ПУТИ К ФАЙЛУ (Используем repo_root) ==============
+    # Теперь путь к index.html строится от корня репозитория
     html_file_path = os.path.join(repo_root, "index.html")
     # =======================================================
     
     try:
         # Читаем шаблон, используя скорректированный путь
-        with open(html_file_path, "r", encoding="utf-8") as f: # <-- ИЗМЕНЕНИЕ ЗДЕСЬ
+        with open(html_file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
     except FileNotFoundError:
         # Теперь эта ошибка не должна возникать, если файл действительно есть в корне
