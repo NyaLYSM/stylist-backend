@@ -27,7 +27,16 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# 2. Подключение статики (ИСПРАВЛЕНО: использует АБСОЛЮТНЫЙ путь project_dir)
+# ========================================
+# HEALTH CHECK (ДОЛЖЕН БЫТЬ ПЕРЕД ДРУГИМИ ЭНДПОИНТАМИ)
+# ========================================
+@app.get("/health", include_in_schema=False)
+def health_check():
+    """Эндпоинт для проверки работоспособности Render Health Check."""
+    return {"status": "ok"}
+# ========================================
+
+# 3. Подключение статики (Использует АБСОЛЮТНЫЙ путь project_dir)
 
 # Путь к папке static в текущей директории (stylist-backend/static)
 static_dir_path = os.path.join(project_dir, "static")
@@ -49,8 +58,45 @@ app.add_middleware(
 )
 
 
-# ... (Блок миграции и роутеры без изменений) ...
+# ========================================
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ 
+# ========================================
+try:
+    from sqlalchemy import inspect
+    with engine.connect() as connection:
+        existing_tables = connection.dialect.get_table_names(connection)
+        needs_migration = False
 
+        if existing_tables and "users" in existing_tables:
+            insp = inspect(connection)
+            user_columns = [col['name'] for col in insp.get_columns('users')]
+            
+            if "hashed_password" not in user_columns:
+                print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
+                pass 
+
+        if not existing_tables or needs_migration:
+            Base.metadata.create_all(bind=engine)
+            print("✅ БД создана/обновлена!")
+        else:
+            print("✅ БД актуальна")
+            
+except Exception as e:
+    print(f"⚠️  Ошибка при проверке БД: {e}")
+    Base.metadata.create_all(bind=engine)
+# ========================================
+
+
+# ========================================
+# ПОДКЛЮЧЕНИЕ РОУТЕРОВ И ЭНДПОИНТОВ
+# ========================================
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"]) 
+app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"]) 
+app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
+app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
+app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
+app.include_router(import_router.router, prefix="/api/import", tags=["import"])
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
@@ -62,11 +108,10 @@ async def serve_index():
     html_file_path = os.path.join(repo_root, "index.html")
     
     try:
-        # Читаем шаблон
         with open(html_file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
     except FileNotFoundError:
-        # Если здесь сработает 500, то Render не развернул файл (см. Шаг 2)
+        # Эта ошибка должна указывать на неправильные настройки Render
         return HTMLResponse("index.html not found. Check Render Root Directory configuration.", status_code=500)
 
     # Запасной локальный адрес для локальной разработки
