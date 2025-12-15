@@ -35,7 +35,7 @@ def get_profile(
             "tg_id": user.tg_id,
             "username": user.username,
             # ИСПРАВЛЕНО: используем first_name и last_name
-            "first_name": user.first_name, 
+            "first_name": user.first_name,
             "last_name": user.last_name,
             "last_login": user.last_login,
         },
