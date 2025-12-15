@@ -101,11 +101,21 @@ async def serve_index():
     # RENDER_EXTERNAL_URL - переменная, которую Render устанавливает автоматически
     backend_url = os.getenv("RENDER_EXTERNAL_URL") 
     
+    # ============== ИСПРАВЛЕНИЕ ПУТИ К ФАЙЛУ ==============
+    # 1. Определяем директорию, где находится main.py
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # 2. Определяем родительскую директорию (Корень репозитория)
+    repo_root = os.path.dirname(current_dir)
+    # 3. Полный путь к index.html
+    html_file_path = os.path.join(repo_root, "index.html")
+    # =======================================================
+    
     try:
-        # Читаем шаблон
-        with open("index.html", "r", encoding="utf-8") as f:
+        # Читаем шаблон, используя скорректированный путь
+        with open(html_file_path, "r", encoding="utf-8") as f: # <-- ИЗМЕНЕНИЕ ЗДЕСЬ
             html_content = f.read()
     except FileNotFoundError:
+        # Теперь эта ошибка не должна возникать, если файл действительно есть в корне
         return HTMLResponse("index.html not found", status_code=500)
 
     # Запасной локальный адрес для локальной разработки
