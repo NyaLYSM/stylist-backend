@@ -1,4 +1,6 @@
-from sqlafrom sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, Text, DateTime
+# models.py
+
+from sqlalchemy import Column, Integer, String, BigInteger, ForeignKey, Text, DateTime
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -13,8 +15,8 @@ class User(Base):
     hashed_password = Column(String, nullable=True) 
     
     first_name = Column(String, nullable=True)
-    last_name = Column(String, nullable=True) # <-- ДОБАВЛЕНО
-    last_login = Column(DateTime, default=datetime.utcnow, nullable=True) # <-- ДОБАВЛЕНО
+    last_name = Column(String, nullable=True) # <-- ДОБАВЛЕНО в предыдущем исправлении
+    last_login = Column(DateTime, default=datetime.utcnow, nullable=True) # <-- ДОБАВЛЕНО в предыдущем исправлении
     
     registered_at = Column(DateTime, default=datetime.utcnow)
     subscription_type = Column(String, default="free") 
@@ -46,7 +48,7 @@ class Look(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(BigInteger, ForeignKey("users.tg_id"), nullable=False, index=True)
     look_name = Column(String, nullable=True)
-    items_ids = Column(Text, nullable=True)
+    items_ids = Column(Text, nullable=True) # Храним IDs элементов гардероба (например, "1,5,12")
     occasion = Column(String, nullable=True)
     image_url = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
@@ -61,13 +63,13 @@ class Profile(Base):
     bio = Column(Text, nullable=True)
     avatar_url = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-
-
+    
+    
 class Analysis(Base):
     __tablename__ = "analyses"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(BigInteger, ForeignKey("users.tg_id"), nullable=False, index=True)
-    photo_id = Column(String, nullable=True)
-    analysis_text = Column(Text, nullable=True)
+    photo_id = Column(String, nullable=False) # ID файла в Telegram
+    analysis_text = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
