@@ -9,6 +9,7 @@ sys.path.insert(0, project_root)
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 
 from routers import auth, wardrobe, looks, profile, import_router, api_auth, tg_auth 
 from database import Base, engine
@@ -101,3 +102,28 @@ def home():
         "status": "ok",
         "message": "Stylist Backend работает! 🎨"
     }
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    """Отдает index.html, подставляя динамический URL бэкенда."""
+    
+    # RENDER_EXTERNAL_URL - переменная, которую Render устанавливает автоматически
+    backend_url = os.getenv("RENDER_EXTERNAL_URL") 
+    
+    try:
+        # Читаем шаблон
+        with open("index.html", "r", encoding="utf-8") as f:
+            html_content = f.read()
+    except FileNotFoundError:
+        return HTMLResponse("index.html not found", status_code=500)
+
+    # Запасной локальный адрес для локальной разработки
+    final_url = backend_url or "http://127.0.0.1:8000" 
+    
+    # Заменяем плейсхолдер на реальный URL
+    html_content = html_content.replace(
+        'window.BACKEND_URL = "{{ BACKEND_URL }}"', 
+        f'window.BACKEND_URL = "{final_url}"'
+    )
+    
+    return HTMLResponse(content=html_content, status_code=200)
