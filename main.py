@@ -28,7 +28,7 @@ app = FastAPI(
 )
 
 # ========================================
-# HEALTH CHECK (Успешно работает, оставлен в начале)
+# HEALTH CHECK (Для успешного прохождения Render Health Check)
 # ========================================
 @app.get("/health", include_in_schema=False)
 def health_check():
@@ -40,9 +40,9 @@ def health_check():
 # 2. Подключение статики (ИСПРАВЛЕНО: использует полный путь от корня репозитория)
 static_dir_path = os.path.join(repo_root, "static")
 
-# создаём папку static/images если нет
+# создаём папку static/images в корне репозитория, если ее нет
 os.makedirs(os.path.join(static_dir_path, "images"), exist_ok=True)
-# ВАЖНО: Папка "static" должна существовать в корне проекта!
+# ВАЖНО: Подключаем статику по абсолютному пути
 app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 
 # CORS - разрешаем все источники для WebApp
@@ -56,9 +56,40 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО)
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО ДЛЯ БЫСТРОГО ЗАПУСКА)
 # ========================================
-# КОД МИГРАЦИИ ЗАКОММЕНТИРОВАН, чтобы избежать тайм-аута при запуске. 
+# try:
+#     from sqlalchemy import inspect
+#     # ИСПРАВЛЕНИЕ: Используем активное подключение для инспекции БД
+#     with engine.connect() as connection:
+        
+#         # ИСПРАВЛЕНИЕ ОШИБКИ: PGDialect.get_table_names требует объект connection
+#         existing_tables = connection.dialect.get_table_names(connection)
+#         needs_migration = False
+
+#         if existing_tables and "users" in existing_tables:
+#             # Используем инспектор для текущего подключения
+#             insp = inspect(connection)
+#             user_columns = [col['name'] for col in insp.get_columns('users')]
+            
+#             # Проверяем наличие нового поля hashed_password
+#             if "hashed_password" not in user_columns:
+#                 print("⚠️ Найдена старая схема БД (нет hashed_password). Требуется миграция.")
+#                 # pass остается, чтобы пропустить миграцию без Alembic
+#                 pass 
+
+#         if not existing_tables or needs_migration:
+#             # Создаем таблицы, если их нет или нужна миграция
+#             Base.metadata.create_all(bind=engine)
+#             print("✅ БД создана/обновлена!")
+#         else:
+#             print("✅ БД актуальна")
+            
+# except Exception as e:
+#     print(f"⚠️  Ошибка при проверке БД: {e}")
+#     # Пытаемся создать таблицы на случай, если сама проверка упала. 
+#     # SQLAlchemy пропустит уже существующие таблицы.
+#     Base.metadata.create_all(bind=engine)
 # ========================================
 
 
@@ -82,8 +113,8 @@ async def serve_index():
     # RENDER_EXTERNAL_URL - переменная, которую Render устанавливает автоматически
     backend_url = os.getenv("RENDER_EXTERNAL_URL") 
     
-    # ============== ИСПРАВЛЕНИЕ ПУТИ К ФАЙЛУ (Используем repo_root) ==============
-    # Теперь путь к index.html строится от корня репозитория
+    # ============== ПУТЬ К index.html (уже был исправлен) ==============
+    # Полный путь к index.html
     html_file_path = os.path.join(repo_root, "index.html")
     # =======================================================
     
