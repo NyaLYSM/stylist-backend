@@ -51,18 +51,32 @@ app.add_middleware(
 # ========================================
 # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (без изменений)
 # ========================================
+# main.py
+
+# ... (начало файла без изменений)
+
+# ========================================
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННАЯ ВЕРСИЯ)
+# ========================================
 try:
     from sqlalchemy import inspect
     with engine.connect() as connection:
-        existing_tables = connection.dialect.get_table_names(connection)
-        if not existing_tables:
-            Base.metadata.create_all(bind=engine)
-            print("✅ БД создана/обновлена!")
-        else:
-            print("✅ БД актуальна")
+        # existing_tables = connection.dialect.get_table_names(connection) # ЗАКОММЕНТИРОВАТЬ
+        # if not existing_tables:                                         # ЗАКОММЕНТИРОВАТЬ
+        #     Base.metadata.create_all(bind=engine)                       # ЗАКОММЕНТИРОВАТЬ
+        #     print("✅ БД создана/обновлена!")                           # ЗАКОММЕНТИРОВАТЬ
+        # else:                                                           # ЗАКОММЕНТИРОВАТЬ
+        #     print("✅ БД актуальна")                                    # ЗАКОММЕНТИРОВАТЬ
+            
+        Base.metadata.create_all(bind=engine) # <-- ГЛАВНОЕ: ОСТАВИТЬ ТОЛЬКО ЭТОТ ВЫЗОВ
+        print("✅ БД обновлена (принудительно)")                          # <-- ДОБАВИТЬ ЭТУ СТРОКУ
+
 except Exception as e:
     print(f"⚠️  Ошибка при проверке БД: {e}")
     Base.metadata.create_all(bind=engine)
+# ========================================
+
+# ... (конец файла без изменений)
 # ========================================
 
 # ========================================
