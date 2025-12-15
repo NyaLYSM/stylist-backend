@@ -38,17 +38,27 @@ def health_check():
 # ========================================
 
 
-# 2. Подключение статики (ИСПРАВЛЕНО: использует абсолютный путь repo_root)
+# 2. Подключение статики (С ОТЛАДКОЙ)
 
 # Путь к папке static в корне репозитория (AIBOT)
 static_dir_path = os.path.join(repo_root, "static")
 image_dir_path = os.path.join(static_dir_path, "images")
 
-# создаём папку static/images по АБСОЛЮТНОМУ пути
-os.makedirs(image_dir_path, exist_ok=True)
+# Выводим в лог, какой путь используется для статики
+print(f"DEBUG: Используется корневая директория репозитория: {repo_root}")
+print(f"DEBUG: Ожидаемый путь к static: {static_dir_path}")
 
-# Монтируем статику по АБСОЛЮТНОМУ пути, указывая, что папка static находится в корне
-app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
+try:
+    # создаём папку static/images по АБСОЛЮТНОМУ пути
+    os.makedirs(image_dir_path, exist_ok=True)
+
+    # Монтируем статику по АБСОЛЮТНОМУ пути
+    app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
+    print("DEBUG: Папка static успешно смонтирована.")
+
+except Exception as e:
+    # Логгируем, если ошибка происходит при монтировании статики
+    print(f"FATAL ERROR: Ошибка при монтировании статики: {e}")
 
 
 # CORS - разрешаем все источники для WebApp
@@ -62,13 +72,15 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (Закомментировано для устранения тайм-аута)
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (Закомментировано для быстрого запуска)
 # ========================================
+
 # try:
 #     from sqlalchemy import inspect
 #     ... (Весь блок миграции закомментирован) ...
 # except Exception as e:
 #     ... (Весь блок миграции закомментирован) ...
+
 # ========================================
 
 
@@ -89,19 +101,28 @@ app.include_router(import_router.router, prefix="/api/import", tags=["import"])
 async def serve_index():
     """Отдает index.html, подставляя динамический URL бэкенда."""
     
-    # RENDER_EXTERNAL_URL - переменная, которую Render устанавливает автоматически
     backend_url = os.getenv("RENDER_EXTERNAL_URL") 
     
     # Полный путь к index.html (используем repo_root)
     html_file_path = os.path.join(repo_root, "index.html")
     
+    # Выводим в лог, какой путь используется для index.html
+    print(f"DEBUG: Ожидаемый путь к index.html: {html_file_path}")
+    
     try:
         # Читаем шаблон, используя скорректированный путь
         with open(html_file_path, "r", encoding="utf-8") as f:
             html_content = f.read()
-    except FileNotFoundError:
-        # Если файл не найден, возвращаем 500
-        return HTMLResponse("index.html not found", status_code=500)
+            print("DEBUG: index.html успешно прочитан.")
+    except FileNotFoundError as e:
+        # Если файл не найден, выводим подробную ошибку в лог, прежде чем вернуть 500
+        print(f"FATAL ERROR: File not found at path: {html_file_path}")
+        # Возвращаем 500 с сообщением для отладки
+        return HTMLResponse("index.html not found. Check server logs for path details.", status_code=500)
+    except Exception as e:
+        # Ловим любые другие ошибки чтения
+        print(f"FATAL ERROR: Непредвиденная ошибка при чтении index.html: {e}")
+        return HTMLResponse(f"Server Error reading HTML: {e}", status_code=500)
 
     # Запасной локальный адрес для локальной разработки
     final_url = backend_url or "http://127.0.0.1:8000" 
