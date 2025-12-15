@@ -6,6 +6,7 @@ sys.path.insert(0, project_root)
 # =========================================
 
 # Определяем корневой путь репозитория (на один уровень выше, чем main.py)
+# Это путь к папке AIBOT/, где находятся index.html и static/
 repo_root = os.path.dirname(project_root) 
 
 from fastapi import FastAPI
@@ -28,7 +29,7 @@ app = FastAPI(
 )
 
 # ========================================
-# HEALTH CHECK 
+# HEALTH CHECK (для успешного прохождения Render Health Check)
 # ========================================
 @app.get("/health", include_in_schema=False)
 def health_check():
@@ -41,14 +42,12 @@ def health_check():
 
 # Путь к папке static в корне репозитория (AIBOT)
 static_dir_path = os.path.join(repo_root, "static")
-
-# Путь к папке images внутри static
 image_dir_path = os.path.join(static_dir_path, "images")
 
-# создаём папку static/images по АБСОЛЮТНОМУ пути, если ее нет
+# создаём папку static/images по АБСОЛЮТНОМУ пути
 os.makedirs(image_dir_path, exist_ok=True)
 
-# Монтируем статику по АБСОЛЮТНОМУ пути
+# Монтируем статику по АБСОЛЮТНОМУ пути, указывая, что папка static находится в корне
 app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 
 
@@ -63,15 +62,13 @@ app.add_middleware(
 
 
 # ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (Оставляем закомментированной для быстрого запуска)
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (Закомментировано для устранения тайм-аута)
 # ========================================
-
 # try:
 #     from sqlalchemy import inspect
-#     # ... (Весь блок миграции закомментирован) ...
+#     ... (Весь блок миграции закомментирован) ...
 # except Exception as e:
-#     # ... (Весь блок миграции закомментирован) ...
-
+#     ... (Весь блок миграции закомментирован) ...
 # ========================================
 
 
