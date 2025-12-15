@@ -94,15 +94,6 @@ app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
 
-
-@app.get("/")
-def home():
-    """Главная страница API"""
-    return {
-        "status": "ok",
-        "message": "Stylist Backend работает! 🎨"
-    }
-
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     """Отдает index.html, подставляя динамический URL бэкенда."""
