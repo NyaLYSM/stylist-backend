@@ -34,8 +34,9 @@ def get_profile(
         "user": {
             "tg_id": user.tg_id,
             "username": user.username,
-            "first_name": user.first_name, # ИСПРАВЛЕНО
-            "last_name": user.last_name,   # ИСПРАВЛЕНО
+            # ИСПРАВЛЕНО: используем first_name и last_name
+            "first_name": user.first_name, 
+            "last_name": user.last_name,
             "last_login": user.last_login,
         },
         "latest_analyses": latest_analyses
