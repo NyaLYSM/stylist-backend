@@ -1,4 +1,4 @@
-# routers/wardrobe.py (Полный исправленный файл, V2)
+# routers/wardrobe.py (Полный исправленный файл, V3)
 
 import os
 import requests 
@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from io import BytesIO 
 from PIL import Image 
-import asyncio 
+import asyncio # <--- ДОБАВЛЕНО ДЛЯ АСИНХРОННОЙ РАБОТЫ (I/O FIX)
 
 # Абсолютные импорты
 from database import get_db
@@ -15,9 +15,8 @@ from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 
-# *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ 1: ИМПОРТ get_current_user_id ***
-# ВАЖНО: Если ваш файл авторизации называется не 'auth.py', 
-# замените '.auth' на правильное имя файла (например, '.tg_auth')
+# *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ИМПОРТ get_current_user_id ***
+# Предполагаем, что get_current_user_id находится в файле auth.py в той же папке 'routers'
 from .auth import get_current_user_id 
 
 
@@ -131,7 +130,7 @@ async def add_item_file(
 
 # --- 3. Добавление вещи по URL (Ручной режим) ---
 @router.post("/add-url")
-async def add_item_by_url( # АСИНХРОННЫЙ
+async def add_item_by_url( # АСИНХРОННЫЙ (FIX)
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
@@ -140,7 +139,7 @@ async def add_item_by_url( # АСИНХРОННЫЙ
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
+    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке (FIX)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
@@ -150,17 +149,16 @@ async def add_item_by_url( # АСИНХРОННЫЙ
 
 # --- 4. Добавление вещи по URL (Маркетплейс) ---
 @router.post("/add-marketplace")
-async def add_item_by_marketplace( # АСИНХРОННЫЙ
+async def add_item_by_marketplace( # АСИНХРОННЫЙ (FIX)
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(payload.name)
     if not valid_name:
-        # *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ 2: ОПЕЧАТКА name:error -> name_error ***
-        raise HTTPException(400, f"Ошибка названия: {name_error}") 
+        raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
+    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке (FIX)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
