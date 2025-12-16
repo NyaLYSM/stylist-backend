@@ -1,4 +1,4 @@
-# routers/wardrobe.py (Полный исправленный файл, V3)
+# routers/wardrobe.py (Финальный исправленный файл, V5 - Устранена ошибка SyntaxError)
 
 import os
 import requests 
@@ -7,14 +7,17 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from io import BytesIO 
 from PIL import Image 
-import asyncio # <--- ДОБАВЛЕНО ДЛЯ АСИНХРОННОЙ РАБОТЫ (I/O FIX)
+import asyncio 
 
 # Абсолютные импорты
 from database import get_db
 from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-from .auth import get_current_user_id
+
+# *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ИМПОРТ ДОЛЖЕН БЫТЬ ЗДЕСЬ, НА УРОВНЕ МОДУЛЯ ***
+from .auth import get_current_user_id 
+
 
 # Схема для принятия URL и имени
 class ItemUrlPayload(BaseModel):
@@ -82,7 +85,6 @@ def download_and_save_image(url: str, name: str, user_id: int, item_type: str, d
 @router.get("/list")
 def get_all_items(
     db: Session = Depends(get_db),
-    from .auth import get_current_user_id
     user_id: int = Depends(get_current_user_id) 
 ):
     items = db.query(WardrobeItem).filter(
@@ -96,7 +98,6 @@ async def add_item_file(
     name: str = Form(...),
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
-    from .auth import get_current_user_id
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(name)
@@ -128,17 +129,16 @@ async def add_item_file(
 
 # --- 3. Добавление вещи по URL (Ручной режим) ---
 @router.post("/add-url")
-async def add_item_by_url( # АСИНХРОННЫЙ (FIX)
+async def add_item_by_url( 
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
-    from .auth import get_current_user_id
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(payload.name)
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке (FIX)
+    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
@@ -148,17 +148,16 @@ async def add_item_by_url( # АСИНХРОННЫЙ (FIX)
 
 # --- 4. Добавление вещи по URL (Маркетплейс) ---
 @router.post("/add-marketplace")
-async def add_item_by_marketplace( # АСИНХРОННЫЙ (FIX)
+async def add_item_by_marketplace( 
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
-    from .auth import get_current_user_id
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(payload.name)
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке (FIX)
+    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
@@ -171,7 +170,6 @@ async def add_item_by_marketplace( # АСИНХРОННЫЙ (FIX)
 def delete_item(
     item_id: int,
     db: Session = Depends(get_db),
-    from .auth import get_current_user_id
     user_id: int = Depends(get_current_user_id)
 ):
     item = db.query(WardrobeItem).filter(
