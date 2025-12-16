@@ -3,11 +3,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from passlib.context import CryptContext
-from jose import jwt, JWTError
+from jose import jwt
 
-# ИСПРАВЛЕНИЕ: Эти импорты должны быть на уровне модуля (в начале файла)!
-from fastapi import Header, HTTPException, Depends 
-from starlette.status import HTTP_401_UNAUTHORIZED 
+# Эти импорты могут быть удалены, так как они используются только в удаленных функциях, 
+# но для порядка можем оставить только те, что не вызывают циклов.
+# from fastapi import Header, HTTPException, Depends 
+# from starlette.status import HTTP_401_UNAUTHORIZED 
 
 
 # 1. Конфигурация хеширования паролей
@@ -45,3 +46,4 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+# ВНИМАНИЕ: ФУНКЦИИ decode_access_token И get_current_user_id УДАЛЕНЫ ОТСЮДА
