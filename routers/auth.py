@@ -1,92 +1,47 @@
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-from database import get_db
-from models import User
-from datetime import datetime, timedelta
 import os
+from datetime import datetime, timedelta
+from typing import Optional
 
-router = APIRouter()
+from passlib.context import CryptContext
+from jose import jwt, JWTError
 
-TRIAL_PERIOD_DAYS = int(os.getenv("TRIAL_PERIOD_DAYS", 1))
-
-
-# Register user
-# routers/auth.py
-
-# Register user
-@router.post("/register")
-def register_user(user_id: int, username: str = None, first_name: str = None, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.tg_id == user_id).first()
-
-    if not user:
-        user = User(
-            tg_id=user_id,
-            username=username,
-            first_name=first_name,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    return {"success": True, "user": {
-        "tg_id": user.tg_id,
-        "subscription_type": user.subscription_type,
-        "trial_used": user.trial_used,
-        "subscription_until": user.subscription_until
-    }}
+# ИСПРАВЛЕНИЕ: Эти импорты должны быть на уровне модуля (в начале файла)!
+from fastapi import Header, HTTPException, Depends 
+from starlette.status import HTTP_401_UNAUTHORIZED 
 
 
-# Get user
-@router.get("/user/{user_id}")
-def get_user(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.tg_id == user_id).first()
-    if not user:
-        raise HTTPException(404, "User not found")
-    return user
+# 1. Конфигурация хеширования паролей
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# 2. Конфигурация JWT
+# Ключ берется только из переменной окружения.
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY") 
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 
+
+# Критическая проверка безопасности
+if not SECRET_KEY:
+    raise ValueError("JWT_SECRET_KEY не установлен в переменных окружения. JWT не может быть безопасно сгенерирован/проверен.")
 
 
-# Check subscription
-@router.get("/subscription/{user_id}")
-def check_subscription(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.tg_id == user_id).first()
-    if not user:
-        raise HTTPException(404, "User not found")
+def get_password_hash(password: str) -> str:
+    """Хеширует пароль перед сохранением в базу данных."""
+    return pwd_context.hash(password)
 
-    return {
-        "has_premium": user.subscription_until and user.subscription_until > datetime.utcnow(),
-        "subscription_type": user.subscription_type,
-        "subscription_until": user.subscription_until
-    }
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Проверяет введенный пароль с хешем из базы данных."""
+    return pwd_context.verify(plain_password, hashed_password)
 
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Создает JWT-токен."""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
-# Activate trial
-@router.post("/trial/{user_id}")
-def activate_trial(user_id: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.tg_id == user_id).first()
-    if not user:
-        raise HTTPException(404, "User not found")
-
-    if user.trial_used:
-        raise HTTPException(400, "Trial already used")
-
-    user.trial_used = 1
-    user.subscription_type = "premium"
-    user.subscription_until = datetime.utcnow() + timedelta(days=TRIAL_PERIOD_DAYS)
-
-    db.commit()
-
-    return {"success": True, "message": "Trial activated"}
-
-
-# Activate subscription
-@router.post("/subscription/{user_id}")
-def activate_subscription(user_id: int, sub_type: str, days: int, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.tg_id == user_id).first()
-    if not user:
-        raise HTTPException(404, "User not found")
-
-    user.subscription_type = sub_type
-    user.subscription_until = datetime.utcnow() + timedelta(days=days)
-
-    db.commit()
-    return {"success": True}
