@@ -9,9 +9,7 @@ SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
 
 if not SECRET_KEY:
-    # Важно: На Render установите переменную JWT_SECRET_KEY!
     raise ValueError("JWT_SECRET_KEY не установлен в переменных окружения. Аутентификация невозможна.")
-
 
 def decode_access_token(token: str) -> Optional[dict]:
     """Декодирует и проверяет JWT-токен."""
