@@ -1,45 +1,64 @@
-# wardrobe.py (Полный файл, включая новые роуты)
+# routers/wardrobe.py (Полный исправленный файл)
 
 import os
-import requests # <-- НУЖЕН НОВЫЙ ИМПОРТ
+import requests 
 from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
-from pydantic import BaseModel # <-- НУЖЕН НОВЫЙ ИМПОРТ
+from pydantic import BaseModel 
 from sqlalchemy.orm import Session
+from io import BytesIO 
+from PIL import Image 
 
 # Абсолютные импорты
 from database import get_db
 from models import WardrobeItem
+# Если utils/validators.py содержит validate_image_bytes, 
+# то лучше использовать его. Если нет, оставьте функцию в этом файле
 from utils.storage import delete_image, save_image
-from utils.validators import validate_name, validate_image_bytes
-from utils.auth import get_current_user_id
-# Если нужен CLIP, раскомментируйте:
-# from utils.clip_helper import clip_check
+from utils.validators import validate_name
+# from utils.validators import validate_name, validate_image_bytes # Если используете внешний валидатор
 
 # Схема для принятия URL и имени
 class ItemUrlPayload(BaseModel):
     name: str
     url: str
 
-# УБРАЛИ prefix="/wardrobe", так как он уже есть в main.py
+# Если validate_image_bytes не определена в validators.py, используйте эту:
+def validate_image_bytes(file_bytes: bytes):
+    MAX_SIZE_MB = 10
+    if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
+        return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
+    
+    try:
+        img = Image.open(BytesIO(file_bytes))
+        img.verify() 
+        if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
+             return False, "Неподдерживаемый формат изображения."
+    except Exception:
+        return False, "Файл не является действительным изображением."
+        
+    return True, None
+
+
 router = APIRouter(tags=["Wardrobe"])
 
-# Вспомогательная функция для загрузки URL
+# Вспомогательная функция для загрузки URL (используется для обоих новых роутов)
 def download_and_save_image(url: str, name: str, user_id: int, item_type: str, db: Session):
     try:
-        response = requests.get(url, timeout=10)
+        # Установка таймаута для предотвращения зависания
+        response = requests.get(url, timeout=10) 
         response.raise_for_status() # Вызывает исключение для 4xx/5xx
     except requests.exceptions.RequestException as e:
         raise HTTPException(400, f"Ошибка скачивания фото по URL: {str(e)}")
         
     file_bytes = response.content
     
-    valid_image, image_error = validate_image_bytes(file_bytes)
+    # Используем локальную validate_image_bytes, если не импортирована
+    valid_image, image_error = validate_image_bytes(file_bytes) 
     if not valid_image:
         raise HTTPException(400, f"Ошибка файла: {image_error}")
 
     # Сохранение
     try:
-        # Используем имя файла из URL, или просто заглушку
         filename = url.split('/')[-1].split('?')[0] or f"item_{user_id}_{name[:10]}.jpg"
         final_url = save_image(filename, file_bytes)
     except Exception as e:
@@ -72,13 +91,12 @@ def get_all_items(
 
 # --- 2. Загрузка вещи (файл) ---
 @router.post("/upload")
-async def add_item_file( # Переименовал функцию для ясности
+async def add_item_file( # Переименовано для ясности
     name: str = Form(...),
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    # Валидация
     valid_name, name_error = validate_name(name)
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
@@ -88,13 +106,11 @@ async def add_item_file( # Переименовал функцию для ясн
     if not valid_image:
         raise HTTPException(400, f"Ошибка файла: {image_error}")
 
-    # Сохранение
     try:
         final_url = save_image(image.filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
-    # Запись в БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
@@ -132,8 +148,6 @@ def add_item_by_marketplace(
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # В этом роуте можно добавить логику парсинга (если она есть), 
-    # но пока используем общую функцию скачивания:
     return download_and_save_image(payload.url, payload.name, user_id, "url_marketplace", db)
 
 
