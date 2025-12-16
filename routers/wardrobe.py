@@ -1,4 +1,4 @@
-# routers/wardrobe.py (Финальный исправленный файл, V5 - Устранена ошибка SyntaxError)
+# routers/wardrobe.py (Финальный исправленный файл)
 
 import os
 import requests 
@@ -15,7 +15,9 @@ from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 
+# *** ИСПРАВЛЕНИЕ: Импорт из нового модуля dependencies ***
 from .dependencies import get_current_user_id
+# ******************************************************
 
 # Схема для принятия URL и имени
 class ItemUrlPayload(BaseModel):
@@ -83,6 +85,7 @@ def download_and_save_image(url: str, name: str, user_id: int, item_type: str, d
 @router.get("/list")
 def get_all_items(
     db: Session = Depends(get_db),
+    # СИНТАКСИЧЕСКАЯ ОШИБКА "from .auth import get_current_user_id" УДАЛЕНА
     user_id: int = Depends(get_current_user_id) 
 ):
     items = db.query(WardrobeItem).filter(
@@ -96,6 +99,7 @@ async def add_item_file(
     name: str = Form(...),
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
+    # СИНТАКСИЧЕСКАЯ ОШИБКА УДАЛЕНА
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(name)
@@ -127,9 +131,10 @@ async def add_item_file(
 
 # --- 3. Добавление вещи по URL (Ручной режим) ---
 @router.post("/add-url")
-async def add_item_by_url( 
+async def add_item_by_url(
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
+    # СИНТАКСИЧЕСКАЯ ОШИБКА УДАЛЕНА
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(payload.name)
@@ -146,9 +151,10 @@ async def add_item_by_url(
 
 # --- 4. Добавление вещи по URL (Маркетплейс) ---
 @router.post("/add-marketplace")
-async def add_item_by_marketplace( 
+async def add_item_by_marketplace(
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
+    # СИНТАКСИЧЕСКАЯ ОШИБКА УДАЛЕНА
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(payload.name)
@@ -168,6 +174,7 @@ async def add_item_by_marketplace(
 def delete_item(
     item_id: int,
     db: Session = Depends(get_db),
+    # СИНТАКСИЧЕСКАЯ ОШИБКА УДАЛЕНА
     user_id: int = Depends(get_current_user_id)
 ):
     item = db.query(WardrobeItem).filter(
