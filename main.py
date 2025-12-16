@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 # Импорты роутеров и БД
 from routers import auth, wardrobe, looks, profile, import_router, api_auth, tg_auth 
-from database import Base, engine
+from database import Base, engine 
 
 # ========================================
 # FASTAPI APP И ИНИЦИАЛИЗАЦИЯ
@@ -26,7 +26,7 @@ app = FastAPI(
 # ========================================
 # HEALTH CHECK
 # ========================================
-# Render Health Check, который теперь работает!
+# Render Health Check
 @app.get("/health", include_in_schema=False)
 def health_check():
     return {"status": "ok"}
@@ -48,22 +48,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ========================================
-# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (без изменений)
-# ========================================
-try:
-    from sqlalchemy import inspect
-    with engine.connect() as connection:
-        existing_tables = connection.dialect.get_table_names(connection)
-        if not existing_tables:
-            Base.metadata.create_all(bind=engine)
-            print("✅ БД создана/обновлена!")
-        else:
-            print("✅ БД актуальна")
-except Exception as e:
-    print(f"⚠️  Ошибка при проверке БД: {e}")
-    Base.metadata.create_all(bind=engine)
-# ========================================
+# ==========================================================
+# АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО ДЛЯ FIX TIMEOUT)
+# Это позволит приложению немедленно запуститься и ответить на /health
+# ==========================================================
+# try:
+#     from sqlalchemy import inspect
+#     with engine.connect() as connection:
+#         existing_tables = connection.dialect.get_table_names(connection)
+#         if not existing_tables:
+#             Base.metadata.create_all(bind=engine)
+#             print("✅ БД создана/обновлена!")
+#         else:
+#             print("✅ БД актуальна")
+# except Exception as e:
+#     print(f"⚠️  Ошибка при проверке БД: {e}")
+#     Base.metadata.create_all(bind=engine) # Оставляем на случай, если таблиц нет, но коннект успешен
+# # ==========================================================
 
 # ========================================
 # ПОДКЛЮЧЕНИЕ РОУТЕРОВ И ЭНДПОИНТОВ
@@ -75,5 +76,3 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
-
-# Маршрут @app.get("/") теперь отсутствует.
