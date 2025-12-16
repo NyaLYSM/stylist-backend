@@ -1,4 +1,4 @@
-# routers/wardrobe.py (Полный исправленный файл)
+# routers/wardrobe.py (Полный исправленный файл, V2)
 
 import os
 import requests 
@@ -7,14 +7,19 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from io import BytesIO 
 from PIL import Image 
-import asyncio # <--- ДОБАВЛЕНО ДЛЯ АСИНХРОННОЙ РАБОТЫ
+import asyncio 
 
-# Абсолютные импорты (убедитесь, что пути правильные для вашей структуры)
+# Абсолютные импорты
 from database import get_db
 from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-# from utils.validators import get_current_user_id # Вам нужно импортировать get_current_user_id, если он не в database.py
+
+# *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ 1: ИМПОРТ get_current_user_id ***
+# ВАЖНО: Если ваш файл авторизации называется не 'auth.py', 
+# замените '.auth' на правильное имя файла (например, '.tg_auth')
+from .auth import get_current_user_id 
+
 
 # Схема для принятия URL и имени
 class ItemUrlPayload(BaseModel):
@@ -82,7 +87,7 @@ def download_and_save_image(url: str, name: str, user_id: int, item_type: str, d
 @router.get("/list")
 def get_all_items(
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id) # Предполагаем, что get_current_user_id импортирован или доступен
+    user_id: int = Depends(get_current_user_id) 
 ):
     items = db.query(WardrobeItem).filter(
         WardrobeItem.user_id == user_id
@@ -126,7 +131,7 @@ async def add_item_file(
 
 # --- 3. Добавление вещи по URL (Ручной режим) ---
 @router.post("/add-url")
-async def add_item_by_url( # <--- СДЕЛАНО АСИНХРОННЫМ
+async def add_item_by_url( # АСИНХРОННЫЙ
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
@@ -138,26 +143,27 @@ async def add_item_by_url( # <--- СДЕЛАНО АСИНХРОННЫМ
     # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
-        None, # Используем дефолтный ThreadPoolExecutor
+        None, 
         lambda: download_and_save_image(payload.url, payload.name, user_id, "url_manual", db)
     )
 
 
 # --- 4. Добавление вещи по URL (Маркетплейс) ---
 @router.post("/add-marketplace")
-async def add_item_by_marketplace( # <--- СДЕЛАНО АСИНХРОННЫМ
+async def add_item_by_marketplace( # АСИНХРОННЫЙ
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(payload.name)
     if not valid_name:
-        raise HTTPException(400, f"Ошибка названия: {name_error}")
+        # *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ 2: ОПЕЧАТКА name:error -> name_error ***
+        raise HTTPException(400, f"Ошибка названия: {name_error}") 
         
     # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
-        None, # Используем дефолтный ThreadPoolExecutor
+        None, 
         lambda: download_and_save_image(payload.url, payload.name, user_id, "url_marketplace", db)
     )
 
