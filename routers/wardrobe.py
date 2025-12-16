@@ -24,6 +24,16 @@ class ItemUrlPayload(BaseModel):
     name: str
     url: str
 
+class ItemResponse(BaseModel):
+    id: int
+    name: str
+    image_url: str
+    source_type: str
+    created_at: datetime # Убедитесь, что datetime импортирован (from datetime import datetime)
+    
+    class Config:
+        from_attributes = True
+
 # Если validate_image_bytes не определена в validators.py, используйте эту:
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 10
@@ -128,6 +138,24 @@ async def add_item_file(
     db.refresh(item)
 
     return {"status": "success", "item_id": item.id, "image_url": final_url}
+
+@router.get("/items", response_model=list[ItemResponse]) 
+def get_wardrobe_items(
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """
+    Возвращает все вещи в гардеробе текущего пользователя.
+    """
+    # 1. Запрос к базе данных для получения всех вещей пользователя
+    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
+    
+    # 2. Если список пуст, возвращаем пустой список (не 404)
+    if not items:
+        return []
+
+    # 3. Возвращаем список вещей
+    return items
 
 # --- 3. Добавление вещи по URL (Ручной режим) ---
 @router.post("/add-url")
