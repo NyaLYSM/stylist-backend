@@ -15,9 +15,7 @@ from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 
-# *** КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ИМПОРТ ДОЛЖЕН БЫТЬ ЗДЕСЬ, НА УРОВНЕ МОДУЛЯ ***
-from .auth import get_current_user_id 
-
+from .dependencies import get_current_user_id
 
 # Схема для принятия URL и имени
 class ItemUrlPayload(BaseModel):
