@@ -1,4 +1,4 @@
-# routers/wardrobe.py (Полный исправленный файл с отладочными сообщениями)
+# routers/wardrobe.py (Полный исправленный файл)
 
 import os
 import requests 
@@ -7,13 +7,14 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from io import BytesIO 
 from PIL import Image 
+import asyncio # <--- ДОБАВЛЕНО ДЛЯ АСИНХРОННОЙ РАБОТЫ
 
-# Абсолютные импорты (убедитесь, что они существуют)
+# Абсолютные импорты (убедитесь, что пути правильные для вашей структуры)
 from database import get_db
 from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-from utils.auth import get_current_user_id # Предполагается, что эта зависимость существует
+# from utils.validators import get_current_user_id # Вам нужно импортировать get_current_user_id, если он не в database.py
 
 # Схема для принятия URL и имени
 class ItemUrlPayload(BaseModel):
@@ -39,34 +40,28 @@ def validate_image_bytes(file_bytes: bytes):
 
 router = APIRouter(tags=["Wardrobe"])
 
-# Вспомогательная функция для загрузки URL 
+# Вспомогательная функция для загрузки URL (синхронная)
 def download_and_save_image(url: str, name: str, user_id: int, item_type: str, db: Session):
-    print(f"DEBUG: Download (URL) - Starting for {name} from {url}") # <<< ОТЛАДКА 1
-    
     try:
         # Установка таймаута для предотвращения зависания
-        response = requests.get(url, timeout=15) # Увеличен таймаут на 5 сек
+        response = requests.get(url, timeout=10) 
         response.raise_for_status() # Вызывает исключение для 4xx/5xx
     except requests.exceptions.RequestException as e:
-        print(f"DEBUG: Download failed: {e}") # <<< ОТЛАДКА 1.1
         raise HTTPException(400, f"Ошибка скачивания фото по URL: {str(e)}")
         
     file_bytes = response.content
     
-    print(f"DEBUG: Download (URL) - Image downloaded. Starting validation.") # <<< ОТЛАДКА 2
-    
+    # Используем локальную validate_image_bytes, если не импортирована
     valid_image, image_error = validate_image_bytes(file_bytes) 
     if not valid_image:
-        print(f"DEBUG: Validation failed: {image_error}") # <<< ОТЛАДКА 2.1
         raise HTTPException(400, f"Ошибка файла: {image_error}")
 
     # Сохранение
     try:
+        # Придумываем имя файла
         filename = url.split('/')[-1].split('?')[0] or f"item_{user_id}_{name[:10]}.jpg"
-        print(f"DEBUG: Download (URL) - Starting save_image for {filename}.") # <<< ОТЛАДКА 3
         final_url = save_image(filename, file_bytes)
     except Exception as e:
-        print(f"DEBUG: Save failed: {e}") # <<< ОТЛАДКА 3.1
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
     # Запись в БД
@@ -80,8 +75,6 @@ def download_and_save_image(url: str, name: str, user_id: int, item_type: str, d
     db.commit()
     db.refresh(item)
     
-    print(f"DEBUG: Download (URL) - Item {item.id} saved successfully. Returning response.") # <<< ОТЛАДКА 4
-    
     return {"status": "success", "item_id": item.id, "image_url": final_url}
 
 
@@ -89,7 +82,7 @@ def download_and_save_image(url: str, name: str, user_id: int, item_type: str, d
 @router.get("/list")
 def get_all_items(
     db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id)
+    user_id: int = Depends(get_current_user_id) # Предполагаем, что get_current_user_id импортирован или доступен
 ):
     items = db.query(WardrobeItem).filter(
         WardrobeItem.user_id == user_id
@@ -104,25 +97,19 @@ async def add_item_file(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    print(f"DEBUG: Upload (File) - Starting for {name}") # <<< ОТЛАДКА 5
-    
     valid_name, name_error = validate_name(name)
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
 
+    # Чтение файла асинхронно
     file_bytes = await image.read()
-    
-    print(f"DEBUG: Upload (File) - File read. Starting validation.") # <<< ОТЛАДКА 6
-    
     valid_image, image_error = validate_image_bytes(file_bytes)
     if not valid_image:
         raise HTTPException(400, f"Ошибка файла: {image_error}")
 
     try:
-        print(f"DEBUG: Upload (File) - Starting save_image for {image.filename}.") # <<< ОТЛАДКА 7
         final_url = save_image(image.filename, file_bytes)
     except Exception as e:
-        print(f"DEBUG: Save failed: {e}") # <<< ОТЛАДКА 7.1
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
     item = WardrobeItem(
@@ -134,14 +121,12 @@ async def add_item_file(
     db.add(item)
     db.commit()
     db.refresh(item)
-    
-    print(f"DEBUG: Upload (File) - Item {item.id} saved successfully. Returning response.") # <<< ОТЛАДКА 8
 
     return {"status": "success", "item_id": item.id, "image_url": final_url}
 
 # --- 3. Добавление вещи по URL (Ручной режим) ---
 @router.post("/add-url")
-def add_item_by_url(
+async def add_item_by_url( # <--- СДЕЛАНО АСИНХРОННЫМ
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
@@ -150,12 +135,17 @@ def add_item_by_url(
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    return download_and_save_image(payload.url, payload.name, user_id, "url_manual", db)
+    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, # Используем дефолтный ThreadPoolExecutor
+        lambda: download_and_save_image(payload.url, payload.name, user_id, "url_manual", db)
+    )
 
 
 # --- 4. Добавление вещи по URL (Маркетплейс) ---
 @router.post("/add-marketplace")
-def add_item_by_marketplace(
+async def add_item_by_marketplace( # <--- СДЕЛАНО АСИНХРОННЫМ
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
@@ -164,7 +154,12 @@ def add_item_by_marketplace(
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    return download_and_save_image(payload.url, payload.name, user_id, "url_marketplace", db)
+    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, # Используем дефолтный ThreadPoolExecutor
+        lambda: download_and_save_image(payload.url, payload.name, user_id, "url_marketplace", db)
+    )
 
 
 # --- 5. Удаление вещи ---
