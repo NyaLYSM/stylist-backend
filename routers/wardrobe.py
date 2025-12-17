@@ -64,7 +64,7 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     try:
         # Используем локальную константу IMAGE_SUBDIR
         filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
-        final_url = save_image(file.filename, file_bytes)
+        final_url = save_image(filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения на диск: {str(e)}")
 
@@ -102,7 +102,11 @@ async def add_item_file(
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
 
+    filename = file.filename
     file_bytes = await file.read()
+    await file.close()   # <-- ВАЖНО
+    final_url = save_image(filename, file_bytes)
+    
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
         raise HTTPException(400, f"Ошибка файла: {error}")
