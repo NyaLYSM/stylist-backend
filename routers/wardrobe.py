@@ -1,4 +1,4 @@
-# routers/wardrobe.py (Финальный исправленный файл)
+# routers/wardrobe.py
 
 import os
 import requests 
@@ -8,14 +8,13 @@ from sqlalchemy.orm import Session
 from io import BytesIO 
 from PIL import Image 
 import asyncio 
+from datetime import datetime 
 
 # Абсолютные импорты
 from database import get_db
-from models import WardrobeItem
+from models import WardrobeItem 
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-
-# *** ИСПРАВЛЕНИЕ: Импорт из нового модуля dependencies ***
 from .dependencies import get_current_user_id
 # ******************************************************
 
