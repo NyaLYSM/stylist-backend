@@ -34,6 +34,24 @@ class ItemResponse(BaseModel):
     class Config:
         from_attributes = True
 
+@router.get("/items", response_model=list[ItemResponse]) 
+def get_wardrobe_items(
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """
+    Возвращает все вещи в гардеробе текущего пользователя.
+    """
+    # Предполагая, что у вас есть модель WardrobeItem
+    try:
+        items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).all()
+        return items
+    except Exception as e:
+        # Если таблица WardrobeItem еще не создана или произошла ошибка БД
+        print(f"Ошибка БД при получении гардероба: {e}")
+        # Чтобы не упасть, но дать понять, что проблема в БД
+        raise HTTPException(status_code=500, detail="Ошибка базы данных при загрузке гардероба.")
+
 # Если validate_image_bytes не определена в validators.py, используйте эту:
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 10
