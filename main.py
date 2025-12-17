@@ -54,6 +54,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import Response, Request
+
+@app.options("/{path:path}")
+async def options_handler(request: Request, path: str):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+            "Access-Control-Allow-Headers": "Authorization,Content-Type",
+            "Access-Control-Allow-Credentials": "true",
+        },
+    )
+
 # ========================================
 # АВТОСОЗДАНИЕ ТАБЛИЦ (опционально)
 # ========================================
