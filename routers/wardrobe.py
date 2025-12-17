@@ -1,34 +1,34 @@
-# routers/wardrobe.py (Полная исправленная версия)
+# routers/wardrobe.py
 
 import os
 import requests 
-from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form, Query # <-- Добавлен Query
-from pydantic import BaseModel 
-from sqlalchemy.orm import Session
+import asyncio 
+from datetime import datetime 
 from io import BytesIO 
 from PIL import Image 
-import asyncio 
-from datetime import datetime # <-- FIX 1: ДОБАВИТЬ ЭТОТ ИМПОРТ
+
+from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form, Query
+from pydantic import BaseModel 
+from sqlalchemy.orm import Session
 
 # Абсолютные импорты
 from database import get_db
-from models import WardrobeItem # Предполагается, что WardrobeItem импортирован
+from models import WardrobeItem 
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-
-# *** ИСПРАВЛЕНИЕ: Импорт из нового модуля dependencies ***
 from .dependencies import get_current_user_id
-# ******************************************************
 
-# ----------------------------------------------------------------------
-# ИНИЦИАЛИЗАЦИЯ РОУТЕРА
-# ----------------------------------------------------------------------
-router = APIRouter(tags=["Wardrobe"]) # <-- FIX 2: ДОБАВИТЬ ЭТУ СТРОКУ
+# --- КОНФИГУРАЦИЯ ---
+# Исправление ошибки 500: Определяем папку здесь
+IMAGE_SUBDIR = "wardrobe_items" 
 
-# ----------------------------------------------------------------------
-# 1. SCHEMAS
-# ----------------------------------------------------------------------
-# Схема ответа для вещи в гардеробе
+router = APIRouter(tags=["Wardrobe"])
+
+# --- СХЕМЫ ---
+class ItemUrlPayload(BaseModel):
+    name: str
+    url: str
+
 class ItemResponse(BaseModel):
     id: int
     name: str
@@ -39,130 +39,98 @@ class ItemResponse(BaseModel):
     class Config:
         from_attributes = True
 
-# Схема для принятия URL и имени
-class ItemUrlPayload(BaseModel):
-    name: str
-    url: str
-
-# ----------------------------------------------------------------------
-# 2. HELPER FUNCTIONS
-# ----------------------------------------------------------------------
-
-# Если validate_image_bytes не определена в validators.py, используйте эту:
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 10
     if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
         return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
-    
     try:
         img = Image.open(BytesIO(file_bytes))
         img.verify() 
         if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
              return False, "Неподдерживаемый формат изображения."
-    except Exception as e:
-        return False, f"Файл не является действительным изображением: {e}"
-        
+    except Exception:
+        return False, "Файл не является действительным изображением."
     return True, None
 
-
-# Синхронная функция, которая должна быть запущена в ThreadPoolExecutor
-def download_and_save_image(url: str, name: str, user_id: int, source_type: str, db: Session):
+def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: str, db: Session):
     try:
-        # 1. Загрузка изображения
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
+        response = requests.get(url, timeout=10) 
+        response.raise_for_status() 
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(400, f"Ошибка скачивания фото: {str(e)}")
         
-        # 2. Валидация
-        file_bytes = response.content
-        valid, error = validate_image_bytes(file_bytes)
-        if not valid:
-            raise HTTPException(400, f"Ошибка изображения: {error}")
-            
-        # 3. Сохранение и получение URL
-        image_url = save_image(file_bytes, WardrobeItem.IMAGE_SUBDIR, user_id, name)
-        
-        # 4. Создание записи в БД
-        new_item = WardrobeItem(
-            user_id=user_id,
-            name=name,
-            image_url=image_url,
-            source_type=source_type,
-            created_at=datetime.utcnow() # Используем utcnow
-        )
-        db.add(new_item)
-        db.commit()
-        db.refresh(new_item)
-        
-        return new_item
-        
-    except requests.exceptions.HTTPError as e:
-        raise HTTPException(400, f"Ошибка при загрузке URL: {e}")
+    file_bytes = response.content
+    valid, error = validate_image_bytes(file_bytes) 
+    if not valid:
+        raise HTTPException(400, f"Ошибка валидации файла: {error}")
+
+    try:
+        # Используем локальную константу IMAGE_SUBDIR
+        filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
+        final_url = save_image(filename, file_bytes, IMAGE_SUBDIR)
     except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Ошибка сервера при обработке изображения: {e}")
+        raise HTTPException(500, f"Ошибка сохранения на диск: {str(e)}")
 
-# ----------------------------------------------------------------------
-# 3. ENDPOINTS
-# ----------------------------------------------------------------------
+    item = WardrobeItem(
+        user_id=user_id,
+        name=name.strip(),
+        source_type=item_type, # Исправлено название поля под модель
+        image_url=final_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
 
-# --- 1. Получение списка вещей (FIXED ENDPOINT) ---
-@router.get("/items", response_model=list[ItemResponse], summary="Получить список вещей в гардеробе")
+# --- РОУТЫ ---
+
+@router.get("/items", response_model=list[ItemResponse]) 
 def get_wardrobe_items(
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id)
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
 ):
-    """
-    Возвращает все предметы гардероба текущего пользователя.
-    """
-    items = db.query(WardrobeItem).filter(
-        WardrobeItem.user_id == user_id
-    ).order_by(WardrobeItem.created_at.desc()).all()
-    
-    return items
+    items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).order_by(WardrobeItem.created_at.desc()).all()
+    return items if items else []
 
-
-# --- 2. Добавление вещи через загрузку файла ---
-@router.post("/add-file", response_model=ItemResponse, summary="Загрузить вещь файлом")
-async def add_item_by_file(
-    name: str = Form(...), 
-    file: UploadFile = File(...),
+# 1. Загрузка файла (Исправляет API Error 500)
+@router.post("/add-file", response_model=ItemResponse)
+async def add_item_file( 
+    name: str = Form(...),
+    file: UploadFile = File(...), # Имя поля 'file' должно совпадать с FormData в JS
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
     valid_name, name_error = validate_name(name)
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
-        
+
     file_bytes = await file.read()
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
-        raise HTTPException(400, f"Ошибка изображения: {error}")
+        raise HTTPException(400, f"Ошибка файла: {error}")
 
     try:
-        # 1. Сохранение изображения
-        image_url = save_image(file_bytes, WardrobeItem.IMAGE_SUBDIR, user_id, name)
-        
-        # 2. Создание записи в БД
-        new_item = WardrobeItem(
-            user_id=user_id,
-            name=name,
-            image_url=image_url,
-            source_type="file_upload",
-            created_at=datetime.utcnow()
-        )
-        db.add(new_item)
-        db.commit()
-        db.refresh(new_item)
-        
-        return new_item
-        
+        # Используем локальную константу IMAGE_SUBDIR
+        final_url = save_image(file.filename, file_bytes, IMAGE_SUBDIR)
     except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Ошибка сервера при обработке файла: {e}")
+        raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
+    item = WardrobeItem(
+        user_id=user_id,
+        name=name.strip(),
+        source_type="file",
+        image_url=final_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
 
-# --- 3. Добавление вещи по URL (Ручной ввод) ---
-@router.post("/add-manual-url", response_model=ItemResponse, summary="Добавить вещь по URL (ручной ввод)")
+# 2. Добавление по URL (Ручной)
+@router.post("/add-manual-url", response_model=ItemResponse)
 async def add_item_by_manual_url(
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
@@ -172,16 +140,14 @@ async def add_item_by_manual_url(
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # Используем run_in_executor для запуска синхронной функции в отдельном потоке
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
-        lambda: download_and_save_image(payload.url, payload.name, user_id, "url_manual", db)
+        lambda: download_and_save_image_sync(payload.url, payload.name, user_id, "url_manual", db)
     )
 
-
-# --- 4. Добавление вещи по URL (Маркетплейс) ---
-@router.post("/add-marketplace", response_model=ItemResponse, summary="Добавить вещь по URL (маркетплейс)")
+# 3. Добавление по URL (Маркетплейс)
+@router.post("/add-marketplace", response_model=ItemResponse)
 async def add_item_by_marketplace(
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
@@ -191,18 +157,15 @@ async def add_item_by_marketplace(
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
         
-    # ИСПОЛЬЗУЕМ run_in_executor для запуска синхронной функции в отдельном потоке
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
-        lambda: download_and_save_image(payload.url, payload.name, user_id, "url_marketplace", db)
+        lambda: download_and_save_image_sync(payload.url, payload.name, user_id, "url_marketplace", db)
     )
 
-
-# --- 5. Удаление вещи ---
-@router.delete("/delete", summary="Удалить вещь из гардероба")
+@router.delete("/delete")
 def delete_item(
-    item_id: int = Query(..., description="ID предмета гардероба"),
+    item_id: int,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
@@ -212,17 +175,13 @@ def delete_item(
     ).first()
 
     if not item:
-        raise HTTPException(status_code=404, detail="Вещь не найдена или не принадлежит пользователю")
-        
+        raise HTTPException(404, detail="Вещь не найдена")
+
     try:
-        # 1. Удаление изображения с диска
-        delete_image(item.image_url) 
-        
-        # 2. Удаление записи из БД
-        db.delete(item)
-        db.commit()
-        
-        return {"message": f"Вещь с ID {item_id} успешно удалена"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Ошибка при удалении: {e}")
+        delete_image(item.image_url)
+    except:
+        pass # Игнорируем ошибки удаления файла, главное удалить из БД
+
+    db.delete(item)
+    db.commit()
+    return {"status": "success"}
