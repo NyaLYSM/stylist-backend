@@ -44,29 +44,11 @@ app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 # ========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://nyalysm.github.io",
-        "https://web.telegram.org",
-        "https://t.me",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-from fastapi import Response, Request
-
-@app.options("/{path:path}")
-async def options_handler(request: Request, path: str):
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-            "Access-Control-Allow-Headers": "Authorization,Content-Type",
-            "Access-Control-Allow-Credentials": "true",
-        },
-    )
 
 # ========================================
 # АВТОСОЗДАНИЕ ТАБЛИЦ (опционально)
