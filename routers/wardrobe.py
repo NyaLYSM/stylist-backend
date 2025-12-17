@@ -16,11 +16,7 @@ from database import get_db
 from models import WardrobeItem 
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-from .dependencies import get_current_user_id
-
-# --- КОНФИГУРАЦИЯ ---
-# Исправление ошибки 500: Определяем папку здесь
-IMAGE_SUBDIR = "wardrobe_items" 
+from .dependencies import get_current_user_id 
 
 router = APIRouter(tags=["Wardrobe"])
 
@@ -68,7 +64,7 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     try:
         # Используем локальную константу IMAGE_SUBDIR
         filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
-        final_url = save_image(filename, file_bytes, IMAGE_SUBDIR)
+        final_url = save_image(file.filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения на диск: {str(e)}")
 
@@ -113,7 +109,7 @@ async def add_item_file(
 
     try:
         # Используем локальную константу IMAGE_SUBDIR
-        final_url = save_image(file.filename, file_bytes, IMAGE_SUBDIR)
+        final_url = save_image(file.filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
