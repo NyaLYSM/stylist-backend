@@ -42,11 +42,16 @@ app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 # CORS (оставляем, чтобы WebApp мог подключаться)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://nyalysm.github.io",
+        "https://web.telegram.org",
+        "https://t.me",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ==========================================================
 # АВТОМАТИЧЕСКАЯ МИГРАЦИЯ (ВРЕМЕННО ЗАКОММЕНТИРОВАНО ДЛЯ FIX TIMEOUT)
