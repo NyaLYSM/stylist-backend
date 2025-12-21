@@ -44,8 +44,12 @@ app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 # ========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=[
+        "https://nyalysm.github.io",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -75,3 +79,4 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
+
