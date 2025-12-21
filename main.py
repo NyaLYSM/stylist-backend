@@ -54,6 +54,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import Request, Response
+
+@app.options("/{full_path:path}")
+async def preflight_handler(request: Request, full_path: str):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "https://nyalysm.github.io",
+            "Access-Control-Allow-Methods": "POST, GET, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
 # ========================================
 # АВТОСОЗДАНИЕ ТАБЛИЦ (опционально)
 # ========================================
@@ -79,4 +92,5 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
+
 
