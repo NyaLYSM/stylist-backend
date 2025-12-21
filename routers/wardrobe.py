@@ -90,33 +90,34 @@ def get_wardrobe_items(
     items = db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).order_by(WardrobeItem.created_at.desc()).all()
     return items if items else []
 
-# 1. Загрузка файла (Исправляет API Error 500)
 @router.post("/add-file", response_model=ItemResponse)
 async def add_item_file( 
     name: str = Form(...),
-    file: UploadFile = File(...), # Имя поля 'file' должно совпадать с FormData в JS
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
+    # 1. Валидация имени
     valid_name, name_error = validate_name(name)
     if not valid_name:
         raise HTTPException(400, f"Ошибка названия: {name_error}")
 
-    filename = file.filename
+    # 2. Читаем файл
     file_bytes = await file.read()
-    await file.close()   # <-- ВАЖНО
-    final_url = save_image(filename, file_bytes)
+    await file.close()
     
+    # 3. Валидация файла
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
         raise HTTPException(400, f"Ошибка файла: {error}")
 
+    # 4. Сохраняем файл (ОДИН РАЗ)
     try:
-        # Используем локальную константу IMAGE_SUBDIR
         final_url = save_image(file.filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
+    # 5. Создаём запись в БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
@@ -185,3 +186,4 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
