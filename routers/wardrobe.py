@@ -30,7 +30,7 @@ class ItemResponse(BaseModel):
     id: int
     name: str
     image_url: str
-    source_type: str
+    item_type: str  # ✅ ИСПРАВЛЕНО: было source_type
     created_at: datetime 
     
     class Config:
@@ -67,7 +67,6 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
         raise HTTPException(400, f"Ошибка валидации файла: {error}")
 
     try:
-        # Используем локальную константу IMAGE_SUBDIR
         filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
         final_url = save_image(filename, file_bytes)
     except Exception as e:
@@ -76,7 +75,7 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
-        source_type=item_type, # Исправлено название поля под модель
+        item_type=item_type,  # ✅ ИСПРАВЛЕНО: было source_type
         image_url=final_url,
         created_at=datetime.utcnow()
     )
@@ -125,7 +124,7 @@ async def add_item_file(
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
-        item_type="file",  # ✅ ИСПРАВЛЕНО: было source_type
+        item_type="file",  # ✅ ИСПРАВЛЕНО
         image_url=final_url,
         created_at=datetime.utcnow()
     )
@@ -190,6 +189,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
