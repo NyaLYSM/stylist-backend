@@ -96,45 +96,43 @@ def get_wardrobe_items(
     return items if items else []
 
 @router.post("/add-file", response_model=ItemResponse)
-async def add_item_by_file(
+async def add_item_file( 
     name: str = Form(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
+    valid_name, name_error = validate_name(name)
+    if not valid_name:
+        raise HTTPException(400, f"Ошибка названия: {name_error}")
+
+    # Читаем файл
+    file_bytes = await file.read()
+    await file.close()
+    
+    # Валидация
+    valid, error = validate_image_bytes(file_bytes)
+    if not valid:
+        raise HTTPException(400, f"Ошибка файла: {error}")
+
+    # Сохранение
     try:
-        # 1. читаем файл
-        file_bytes = await file.read()
-
-        # 2. валидируем
-        is_valid, error_msg = validate_image_bytes(file_bytes)
-        if not is_valid:
-            raise HTTPException(status_code=400, detail=error_msg)
-
-        # 3. генерируем имя
-        ext = os.path.splitext(file.filename)[1] or ".jpg"
-        filename = f"{uuid.uuid4().hex}{ext}"
-
-        # 4. СОХРАНЯЕМ ПРАВИЛЬНО
-        image_url = save_image(filename, file_bytes)
-
-        # 5. пишем в БД
-        item = WardrobeItem(
-            user_id=user_id,
-            name=name,
-            image_url=image_url,
-            source_type="file_upload"
-        )
-        db.add(item)
-        db.commit()
-        db.refresh(item)
-
-        return item
-
+        final_url = save_image(file.filename, file_bytes)
     except Exception as e:
-        # ВАЖНО: чтобы ошибка была видна в Render logs
-        print("ADD FILE ERROR:", repr(e))
-        raise HTTPException(status_code=500, detail=f"Ошибка сохранения: {e}")
+        raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
+
+    # Создание записи в БД
+    item = WardrobeItem(
+        user_id=user_id,
+        name=name.strip(),
+        item_type="file",  # ✅ ИСПРАВЛЕНО: было source_type
+        image_url=final_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
     
 # 2. Добавление по URL (Ручной)
 @router.post("/add-manual-url", response_model=ItemResponse)
@@ -192,6 +190,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
