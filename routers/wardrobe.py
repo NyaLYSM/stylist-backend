@@ -38,16 +38,20 @@ class ItemResponse(BaseModel):
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 10
+
     if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
         return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
+
     try:
-        img = Image.open(BytesIO(file_bytes))
-        img.verify() 
-        if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
-             return False, "Неподдерживаемый формат изображения."
+        with Image.open(BytesIO(file_bytes)) as img:
+            img.verify()  # только проверка
+            if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
+                return False, "Неподдерживаемый формат изображения."
     except Exception:
         return False, "Файл не является действительным изображением."
+
     return True, None
+
 
 def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: str, db: Session):
     try:
@@ -91,45 +95,47 @@ def get_wardrobe_items(
     return items if items else []
 
 @router.post("/add-file", response_model=ItemResponse)
-async def add_item_by_file(
-    name: str = Form(...),          # Принимаем имя из FormData
-    file: UploadFile = File(...),   # Принимаем файл из FormData
+async def add_item_file(
+    name: str = Form(...),
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    # Читаем содержимое файла
-    file_bytes = await file.read()
-    
-    # Валидация (используем вашу функцию из файла)
-    is_valid, error_msg = validate_image_bytes(file_bytes)
-    if not is_valid:
-        raise HTTPException(400, error_msg)
+    # 1. Валидация имени
+    valid_name, name_error = validate_name(name)
+    if not valid_name:
+        raise HTTPException(400, f"Ошибка названия: {name_error}")
 
-    # Сохранение (используем вашу функцию save_image)
+    # 2. Читаем файл
+    file_bytes = await file.read()
+    await file.close()
+
+    # 3. Валидация изображения
+    valid, error = validate_image_bytes(file_bytes)
+    if not valid:
+        raise HTTPException(400, f"Ошибка файла: {error}")
+
+    # 4. Сохраняем ТОЛЬКО bytes
     try:
-        # Генерируем имя файла
-        ext = os.path.splitext(file.filename)[1] or ".jpg"
-        import uuid
-        unique_name = f"{uuid.uuid4().hex}{ext}"
-        
-        # Сохраняем через PIL (как у вас в других функциях)
-        img = Image.open(BytesIO(file_bytes))
-        image_url = save_image(img, unique_name) # ваша функция из utils.storage
-        
+        filename = f"user_{user_id}_{int(datetime.utcnow().timestamp())}.png"
+        final_url = save_image(filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
-    # Запись в базу
-    new_item = WardrobeItem(
+    # 5. Сохраняем в БД
+    item = WardrobeItem(
         user_id=user_id,
-        name=name,
-        image_url=image_url,
-        source_type="file_upload"
+        name=name.strip(),
+        source_type="file",
+        image_url=final_url,
+        created_at=datetime.utcnow()
     )
-    db.add(new_item)
+
+    db.add(item)
     db.commit()
-    db.refresh(new_item)
-    return new_item
+    db.refresh(item)
+
+    return item
     
 # 2. Добавление по URL (Ручной)
 @router.post("/add-manual-url", response_model=ItemResponse)
@@ -187,5 +193,6 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
