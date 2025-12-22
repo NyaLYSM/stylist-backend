@@ -57,17 +57,17 @@ app.add_middleware(
 # ========================================
 # АВТОСОЗДАНИЕ ТАБЛИЦ (опционально)
 # ========================================
-try:
-    from sqlalchemy import inspect
-    with engine.connect() as connection:
-        inspector = inspect(connection)
-        if not inspector.get_table_names():
-            Base.metadata.create_all(bind=engine)
-            print("✅ БД создана")
-        else:
-            print("✅ БД уже существует")
-except Exception as e:
-    print(f"⚠️ Ошибка инициализации БД: {e}")
+#try:
+#    from sqlalchemy import inspect
+#    with engine.connect() as connection:
+#        inspector = inspect(connection)
+#        if not inspector.get_table_names():
+#            Base.metadata.create_all(bind=engine)
+#            print("✅ БД создана")
+#        else:
+#            print("✅ БД уже существует")
+#except Exception as e:
+#    print(f"⚠️ Ошибка инициализации БД: {e}")
 
 # ========================================
 # РОУТЕРЫ
@@ -79,6 +79,7 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
+
 
 
 
