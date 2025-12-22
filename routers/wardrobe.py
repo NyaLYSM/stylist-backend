@@ -111,7 +111,6 @@ async def add_item_by_file(
 
     # Сохранение (используем вашу функцию save_image)
     try:
-        # Генерируем имя файла
         ext = os.path.splitext(file.filename)[1] or ".jpg"
         import uuid
         unique_name = f"{uuid.uuid4().hex}{ext}"
@@ -121,6 +120,7 @@ async def add_item_by_file(
         image_url = save_image(img, unique_name) # ваша функция из utils.storage
         
     except Exception as e:
+        # Если ошибка повторится, мы увидим более точный текст
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
     # Запись в базу
@@ -191,6 +191,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
