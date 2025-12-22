@@ -101,40 +101,33 @@ async def add_item_file(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    # 1. Валидация имени
     valid_name, name_error = validate_name(name)
     if not valid_name:
-        raise HTTPException(400, f"Ошибка названия: {name_error}")
+        raise HTTPException(400, name_error)
 
-    # 2. Читаем файл
     file_bytes = await file.read()
     await file.close()
 
-    # 3. Валидация изображения
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
-        raise HTTPException(400, f"Ошибка файла: {error}")
+        raise HTTPException(400, error)
 
-    # 4. Сохраняем ТОЛЬКО bytes
     try:
-        filename = f"user_{user_id}_{int(datetime.utcnow().timestamp())}.png"
-        final_url = save_image(filename, file_bytes)
+        image_url = save_image(file.filename, file_bytes)
     except Exception as e:
-        raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
+        raise HTTPException(500, f"Ошибка сохранения: {e}")
 
-    # 5. Сохраняем в БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
         source_type="file",
-        image_url=final_url,
+        image_url=image_url,
         created_at=datetime.utcnow()
     )
 
     db.add(item)
     db.commit()
     db.refresh(item)
-
     return item
     
 # 2. Добавление по URL (Ручной)
@@ -193,6 +186,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
