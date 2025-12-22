@@ -46,12 +46,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://nyalysm.github.io",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
+        "http://localhost:*",
+        "*"
     ],
-    allow_credentials=True,
+    allow_credentials=True,  # ✅ ВАЖНО для файлов
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"]  # ✅ Добавьте это
 )
 
 # ========================================
@@ -79,6 +80,7 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
+
 
 
 
