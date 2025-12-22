@@ -91,45 +91,46 @@ def get_wardrobe_items(
     return items if items else []
 
 @router.post("/add-file", response_model=ItemResponse)
-async def add_item_file( 
-    name: str = Form(...),
-    file: UploadFile = File(...),
+async def add_item_by_file(
+    name: str = Form(...),          # Принимаем имя из FormData
+    file: UploadFile = File(...),   # Принимаем файл из FormData
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    # 1. Валидация имени
-    valid_name, name_error = validate_name(name)
-    if not valid_name:
-        raise HTTPException(400, f"Ошибка названия: {name_error}")
-
-    # 2. Читаем файл
+    # Читаем содержимое файла
     file_bytes = await file.read()
-    await file.close()
     
-    # 3. Валидация файла
-    valid, error = validate_image_bytes(file_bytes)
-    if not valid:
-        raise HTTPException(400, f"Ошибка файла: {error}")
+    # Валидация (используем вашу функцию из файла)
+    is_valid, error_msg = validate_image_bytes(file_bytes)
+    if not is_valid:
+        raise HTTPException(400, error_msg)
 
-    # 4. Сохраняем файл (ОДИН РАЗ)
+    # Сохранение (используем вашу функцию save_image)
     try:
-        final_url = save_image(file.filename, file_bytes)
+        # Генерируем имя файла
+        ext = os.path.splitext(file.filename)[1] or ".jpg"
+        import uuid
+        unique_name = f"{uuid.uuid4().hex}{ext}"
+        
+        # Сохраняем через PIL (как у вас в других функциях)
+        img = Image.open(BytesIO(file_bytes))
+        image_url = save_image(img, unique_name) # ваша функция из utils.storage
+        
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
-    # 5. Создаём запись в БД
-    item = WardrobeItem(
+    # Запись в базу
+    new_item = WardrobeItem(
         user_id=user_id,
-        name=name.strip(),
-        source_type="file",
-        image_url=final_url,
-        created_at=datetime.utcnow()
+        name=name,
+        image_url=image_url,
+        source_type="file_upload"
     )
-    db.add(item)
+    db.add(new_item)
     db.commit()
-    db.refresh(item)
-    return item
-
+    db.refresh(new_item)
+    return new_item
+    
 # 2. Добавление по URL (Ручной)
 @router.post("/add-manual-url", response_model=ItemResponse)
 async def add_item_by_manual_url(
@@ -186,4 +187,5 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
