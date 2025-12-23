@@ -38,7 +38,7 @@ class ItemResponse(BaseModel):
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def validate_image_bytes(file_bytes: bytes):
-    MAX_SIZE_MB = 10
+    MAX_SIZE_MB = 3
 
     if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
         return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
@@ -189,6 +189,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
