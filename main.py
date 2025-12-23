@@ -59,19 +59,49 @@ app.add_middleware(
 )
 
 # ========================================
+# ДОПОЛНИТЕЛЬНЫЙ MIDDLEWARE ДЛЯ CORS
+# ========================================
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    """
+    Дополнительная обработка CORS заголовков.
+    Это нужно для некоторых браузеров в Telegram WebApp.
+    """
+    # Обрабатываем preflight запросы
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "https://nyalysm.github.io"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Max-Age"] = "3600"
+        return response
+    
+    # Обычные запросы
+    response = await call_next(request)
+    
+    # Добавляем CORS заголовки к ответу
+    origin = request.headers.get("origin", "")
+    if origin in ["https://nyalysm.github.io", "http://localhost:3000", "http://localhost:8000"]:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    
+    return response
+
+# ========================================
 # АВТОСОЗДАНИЕ ТАБЛИЦ (опционально)
 # ========================================
-#try:
-#    from sqlalchemy import inspect
-#    with engine.connect() as connection:
-#        inspector = inspect(connection)
-#        if not inspector.get_table_names():
-#            Base.metadata.create_all(bind=engine)
-#            print("✅ БД создана")
-#        else:
-#            print("✅ БД уже существует")
-#except Exception as e:
-#    print(f"⚠️ Ошибка инициализации БД: {e}")
+try:
+    from sqlalchemy import inspect
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        if not inspector.get_table_names():
+            Base.metadata.create_all(bind=engine)
+            print("✅ БД создана")
+        else:
+            print("✅ БД уже существует")
+except Exception as e:
+    print(f"⚠️ Ошибка инициализации БД: {e}")
 
 # ========================================
 # РОУТЕРЫ
@@ -88,4 +118,3 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
-
