@@ -59,10 +59,10 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     Поддерживает маркетплейсы (WB, Ozon и др.)
     """
     
-    # Проверка: это прямая ссылка на изображение или страница товара
+    # Проверка на прямую ссылку
     is_direct_image = any(url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif'])
     
-    # Заголовки для имитации браузера (обход блокировок)
+    # Заголовки
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
@@ -77,7 +77,7 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
         'sec-ch-ua-platform': '"Windows"',
     }
     
-    # Определяем Referer по домену
+    # Referer
     from urllib.parse import urlparse
     parsed = urlparse(url)
     domain = parsed.netloc
@@ -93,10 +93,10 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     else:
         headers['Referer'] = f'https://{domain}/'
     
-    # Скачивание с retry логикой
     max_retries = 3
     last_error = None
-    
+    file_bytes = None  # <--- ВАЖНО: Инициализация переменной
+
     for attempt in range(max_retries):
         try:
             response = requests.get(
@@ -104,37 +104,30 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
                 headers=headers,
                 timeout=15,
                 allow_redirects=True,
-                stream=True  # Для больших файлов
+                stream=True
             )
             response.raise_for_status()
-            
-            # Успешно скачали
             file_bytes = response.content
-            break
+            break # Успех, выходим
             
         except requests.exceptions.HTTPError as e:
             last_error = e
             status_code = e.response.status_code if e.response else 0
             
-            # Специальная обработка для разных кодов
             if status_code == 403:
-                # Forbidden - пробуем без некоторых заголовков
                 headers.pop('Sec-Fetch-Dest', None)
                 headers.pop('Sec-Fetch-Mode', None)
                 headers.pop('Sec-Fetch-Site', None)
             elif status_code == 498:
-                # Token expired/invalid - пробуем упрощенные заголовки
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Referer': headers.get('Referer', '')
                 }
             elif status_code >= 500:
-                # Ошибка сервера - ждем и повторяем
                 import time
                 time.sleep(1)
             else:
-                # Другие ошибки - не повторяем
-                break
+                break 
                 
         except requests.exceptions.Timeout:
             last_error = Exception("Timeout: сервер не отвечает")
@@ -144,24 +137,27 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
         except requests.exceptions.RequestException as e:
             last_error = e
             break
-    else:
-        # Все попытки исчерпаны
-        error_msg = str(last_error) if last_error else "Неизвестная ошибка"
-        raise HTTPException(400, f"Не удалось скачать фото после {max_retries} попыток: {error_msg}")
-    
-    # Валидация скачанного файла
+
+    # <--- ИСПРАВЛЕНИЕ ЛОГИКИ --->
+    # Проверяем, скачалось ли что-то вообще
+    if file_bytes is None:
+        error_msg = str(last_error) if last_error else "Не удалось получить ответ от сервера"
+        # Выбрасываем 400 (Bad Request), а не даем упасть с 500
+        raise HTTPException(400, f"Ошибка загрузки изображения: {error_msg}")
+
+    # Валидация
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
         raise HTTPException(400, f"Ошибка валидации файла: {error}")
     
-    # Сохранение на диск/S3
+    # Сохранение
     try:
         filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
         final_url = save_image(filename, file_bytes)
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения на диск: {str(e)}")
     
-    # Создание записи в БД
+    # Запись в БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
@@ -280,6 +276,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
