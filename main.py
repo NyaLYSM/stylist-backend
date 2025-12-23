@@ -1,5 +1,3 @@
-# main.py - ПОЛНОЕ ИСПРАВЛЕНИЕ CORS
-
 import sys
 import os
 
@@ -7,7 +5,7 @@ import os
 project_dir = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, project_dir)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -25,7 +23,7 @@ app = FastAPI(
 )
 
 # ========================================
-# HEALTH CHECK (Render)
+# HEALTH CHECK (Render) - ДОЛЖЕН БЫТЬ ПЕРВЫМ
 # ========================================
 @app.get("/health", include_in_schema=False)
 def health_check():
@@ -41,33 +39,15 @@ os.makedirs(image_dir_path, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 
 # ========================================
-# CORS - КРИТИЧЕСКИ ВАЖНАЯ НАСТРОЙКА
+# CORS - УПРОЩЕННАЯ РАБОЧАЯ ВЕРСИЯ
 # ========================================
-# ВАЖНО: Порядок имеет значение! CORS должен быть ДО роутеров
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://nyalysm.github.io",  # Ваш фронтенд
-        "http://localhost:3000",       # Для локальной разработки
-        "http://localhost:8000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
-    ],
-    allow_credentials=True,  # ✅ Обязательно для авторизации
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-        "Accept",
-        "Origin",
-        "User-Agent",
-        "DNT",
-        "Cache-Control",
-        "X-Requested-With",
-    ],
-    expose_headers=["*"],  # Разрешаем клиенту читать все заголовки
-    max_age=3600,  # Кэширование preflight запросов на 1 час
+    allow_origins=["*"],  # Разрешаем все источники
+    allow_credentials=False,  # При "*" должно быть False
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # ========================================
@@ -86,7 +66,7 @@ except Exception as e:
     print(f"⚠️ Ошибка инициализации БД: {e}")
 
 # ========================================
-# РОУТЕРЫ (ПОСЛЕ CORS!)
+# РОУТЕРЫ
 # ========================================
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"])
@@ -95,28 +75,3 @@ app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
 app.include_router(looks.router, prefix="/api/looks", tags=["looks"])
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(import_router.router, prefix="/api/import", tags=["import"])
-
-# ========================================
-# ДОПОЛНИТЕЛЬНАЯ ОБРАБОТКА OPTIONS
-# ========================================
-# На случай если middleware не ловит все preflight запросы
-@app.options("/{rest_of_path:path}")
-async def preflight_handler(rest_of_path: str):
-    """Обработка CORS preflight запросов"""
-    return {
-        "message": "OK"
-    }
-
-# ========================================
-# MIDDLEWARE ДЛЯ ЛОГИРОВАНИЯ (опционально)
-# ========================================
-@app.middleware("http")
-async def log_requests(request, call_next):
-    """Логирование запросов для отладки"""
-    print(f"📨 {request.method} {request.url.path}")
-    print(f"   Origin: {request.headers.get('origin', 'N/A')}")
-    
-    response = await call_next(request)
-    
-    print(f"✅ Status: {response.status_code}")
-    return response
