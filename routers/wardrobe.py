@@ -39,18 +39,15 @@ class ItemResponse(BaseModel):
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 3
-
     if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
         return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
-
     try:
-        with Image.open(BytesIO(file_bytes)) as img:
-            img.verify()  # только проверка
-            if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
-                return False, "Неподдерживаемый формат изображения."
+        img = Image.open(BytesIO(file_bytes))
+        img.verify() 
+        if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
+             return False, "Неподдерживаемый формат изображения."
     except Exception:
         return False, "Файл не является действительным изображением."
-
     return True, None
 
 
@@ -189,6 +186,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
