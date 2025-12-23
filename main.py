@@ -39,15 +39,23 @@ os.makedirs(image_dir_path, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir_path), name="static")
 
 # ========================================
-# CORS - УПРОЩЕННАЯ РАБОЧАЯ ВЕРСИЯ
+# CORS - ПРАВИЛЬНАЯ КОНФИГУРАЦИЯ
 # ========================================
+# ВАЖНО: Указываем конкретные домены вместо "*"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Разрешаем все источники
-    allow_credentials=False,  # При "*" должно быть False
-    allow_methods=["*"],
+    allow_origins=[
+        "https://nyalysm.github.io",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,  # Теперь можно True
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
+    max_age=3600,
 )
 
 # ========================================
@@ -68,6 +76,11 @@ except Exception as e:
 # ========================================
 # РОУТЕРЫ
 # ========================================
+# Обработка OPTIONS для всех путей (CORS preflight)
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    return {"status": "ok"}
+
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(api_auth.router, prefix="/api/auth", tags=["api_auth"])
 app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"])
