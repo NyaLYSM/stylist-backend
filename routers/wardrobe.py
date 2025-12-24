@@ -180,38 +180,6 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     
     return item
 
-    # Проверяем, скачалось ли что-то вообще
-    if file_bytes is None:
-        error_msg = str(last_error) if last_error else "Не удалось получить ответ от сервера"
-        # Выбрасываем 400 (Bad Request), а не даем упасть с 500
-        raise HTTPException(400, f"Ошибка загрузки изображения: {error_msg}")
-
-    # Валидация
-    valid, error = validate_image_bytes(file_bytes)
-    if not valid:
-        raise HTTPException(400, f"Ошибка валидации файла: {error}")
-    
-    # Сохранение
-    try:
-        filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
-        final_url = save_image(filename, file_bytes)
-    except Exception as e:
-        raise HTTPException(500, f"Ошибка сохранения на диск: {str(e)}")
-    
-    # Запись в БД
-    item = WardrobeItem(
-        user_id=user_id,
-        name=name.strip(),
-        item_type=item_type,
-        image_url=final_url,
-        created_at=datetime.utcnow()
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    
-    return item
-
 # --- РОУТЫ ---
 
 @router.get("/items", response_model=list[ItemResponse]) 
@@ -317,6 +285,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
