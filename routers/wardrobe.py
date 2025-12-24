@@ -51,13 +51,10 @@ def validate_image_bytes(file_bytes: bytes):
     return True, None
 
 
-# routers/wardrobe.py - ИСПРАВЛЕННАЯ ФУНКЦИЯ
+import re
 
+# 1. Математика для Wildberries (оставляем, она самая быстрая)
 def get_basket_host(vol: int) -> str:
-    """
-    Математическая карта серверов Wildberries (актуальна на 2025).
-    Определяет хост по номеру volume.
-    """
     if 0 <= vol <= 143: return "basket-01.wbbasket.ru"
     if 144 <= vol <= 287: return "basket-02.wbbasket.ru"
     if 288 <= vol <= 431: return "basket-03.wbbasket.ru"
@@ -79,37 +76,63 @@ def get_basket_host(vol: int) -> str:
     if 3054 <= vol <= 3269: return "basket-19.wbbasket.ru"
     if 3270 <= vol <= 3485: return "basket-20.wbbasket.ru"
     if 3486 <= vol <= 3701: return "basket-21.wbbasket.ru"
-    return "basket-22.wbbasket.ru" # Для совсем новых товаров
+    return "basket-22.wbbasket.ru"
 
-def resolve_wb_url(url: str) -> str:
+def resolve_image_url(url: str) -> str:
     """
-    Превращает ссылку на товар WB в точную ссылку на фото без лишних запросов.
+    Универсальный поиск картинки.
+    1. WB -> Математика.
+    2. Остальные -> Парсинг Open Graph (og:image).
     """
-    import re
-    # Ищем ID товара
-    match = re.search(r'catalog/(\d+)', url)
-    if not match:
-        return url 
+    # --- ЛОГИКА WB ---
+    if "wildberries" in url or "wb.ru" in url:
+        try:
+            match = re.search(r'catalog/(\d+)', url)
+            if match:
+                nm_id = int(match.group(1))
+                vol = nm_id // 100000
+                part = nm_id // 1000
+                host = get_basket_host(vol)
+                return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+        except:
+            pass # Если не вышло, пробуем общий метод
 
-    nm_id = int(match.group(1))
-    vol = nm_id // 100000
-    part = nm_id // 1000
-    host = get_basket_host(vol)
+    # --- ОБЩАЯ ЛОГИКА (LAMODA, OZON, ALIEXPRESS и др.) ---
+    # Мы скачиваем HTML страницы и ищем там ссылку на картинку
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+    }
     
-    # Формируем прямую ссылку
-    return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+    try:
+        # Скачиваем только первые 100кб страницы, чтобы не грузить весь сайт (обычно мета-теги вверху)
+        with requests.get(url, headers=headers, stream=True, timeout=10) as r:
+            # Ozon иногда возвращает 403 (защита), тогда этот метод упадет и вернет исходный URL
+            if r.status_code == 200:
+                chunk = next(r.iter_content(chunk_size=100000))
+                html_content = chunk.decode('utf-8', errors='ignore')
+                
+                # Ищем тег <meta property="og:image" content="...">
+                # Это стандарт для всех магазинов
+                og_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html_content)
+                if og_image:
+                    return og_image.group(1)
+    except Exception as e:
+        print(f"Ошибка парсинга страницы: {e}")
+
+    # Если ничего не нашли, возвращаем то, что дал юзер (авось это прямая ссылка)
+    return url
+
+
+# --- ГЛАВНАЯ ФУНКЦИЯ ЗАГРУЗКИ ---
 
 def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: str, db: Session):
     
-    # 1. Если это WB, вычисляем ссылку математически
-    if "wildberries" in url or "wb.ru" in url:
-        try:
-            url = resolve_wb_url(url)
-            print(f"WB Resolved: {url}") # Лог для отладки
-        except Exception as e:
-            print(f"WB Resolve Error: {e}")
+    # 1. Пытаемся найти прямую ссылку на фото
+    target_url = resolve_image_url(url)
+    print(f"Source: {url} -> Target: {target_url}")
 
-    # Заголовки (Chrome)
+    # Заголовки для скачивания КАРТИНКИ
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
@@ -117,29 +140,29 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     file_bytes = None
     last_error = None
     
-    # 2. Скачивание
+    # 2. Скачиваем
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(target_url, headers=headers, timeout=15)
         response.raise_for_status()
         file_bytes = response.content
     except Exception as e:
         last_error = e
 
-    # 3. Проверка
+    # 3. Проверка успеха
     if file_bytes is None:
         raise HTTPException(
             status_code=400, 
-            detail=f"Не удалось скачать фото. Попробуйте вставить ПРЯМУЮ ссылку на картинку (ПКМ -> Копировать URL картинки). Ошибка: {str(last_error)}"
+            detail=f"Не удалось скачать изображение. Ошибка: {str(last_error)}. Попробуйте прямую ссылку на фото."
         )
 
     # Валидация
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
-        # Если скачался HTML (страница), значит ссылка не прямая и парсер не сработал
-        if b"<html" in file_bytes[:200].lower():
+        # Если скачался HTML, значит парсер не сработал
+        if b"<html" in file_bytes[:500].lower():
              raise HTTPException(
                 status_code=400, 
-                detail="Это ссылка на страницу, а не на фото. Скопируйте URL самой картинки (ПКМ по фото -> Копировать URL картинки)."
+                detail=f"Не удалось найти картинку на странице. Сайт защищен от ботов. Пожалуйста, скопируйте URL самой картинки (ПКМ -> Копировать URL картинки)."
             )
         raise HTTPException(400, detail=f"Файл поврежден: {error}")
     
@@ -149,9 +172,11 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
         filename = f"market_{uuid.uuid4().hex}.jpg"
         img = Image.open(BytesIO(file_bytes))
         
-        # Если ваша save_image принимает Image объект:
+        # Конвертируем в RGB (если png/webp)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            
         final_url = save_image(img, filename)
-        # Если save_image принимает байты, используйте: save_image(filename, file_bytes)
         
     except Exception as e:
         raise HTTPException(500, detail=f"Ошибка сохранения: {str(e)}")
@@ -275,6 +300,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
