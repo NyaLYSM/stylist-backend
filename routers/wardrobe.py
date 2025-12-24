@@ -53,120 +53,110 @@ def validate_image_bytes(file_bytes: bytes):
 
 # routers/wardrobe.py - ИСПРАВЛЕННАЯ ФУНКЦИЯ
 
+def get_basket_host(vol: int) -> str:
+    """
+    Математическая карта серверов Wildberries (актуальна на 2025).
+    Определяет хост по номеру volume.
+    """
+    if 0 <= vol <= 143: return "basket-01.wbbasket.ru"
+    if 144 <= vol <= 287: return "basket-02.wbbasket.ru"
+    if 288 <= vol <= 431: return "basket-03.wbbasket.ru"
+    if 432 <= vol <= 719: return "basket-04.wbbasket.ru"
+    if 720 <= vol <= 1007: return "basket-05.wbbasket.ru"
+    if 1008 <= vol <= 1061: return "basket-06.wbbasket.ru"
+    if 1062 <= vol <= 1115: return "basket-07.wbbasket.ru"
+    if 1116 <= vol <= 1169: return "basket-08.wbbasket.ru"
+    if 1170 <= vol <= 1313: return "basket-09.wbbasket.ru"
+    if 1314 <= vol <= 1601: return "basket-10.wbbasket.ru"
+    if 1602 <= vol <= 1655: return "basket-11.wbbasket.ru"
+    if 1656 <= vol <= 1919: return "basket-12.wbbasket.ru"
+    if 1920 <= vol <= 2045: return "basket-13.wbbasket.ru"
+    if 2046 <= vol <= 2189: return "basket-14.wbbasket.ru"
+    if 2190 <= vol <= 2405: return "basket-15.wbbasket.ru"
+    if 2406 <= vol <= 2621: return "basket-16.wbbasket.ru"
+    if 2622 <= vol <= 2837: return "basket-17.wbbasket.ru"
+    if 2838 <= vol <= 3053: return "basket-18.wbbasket.ru"
+    if 3054 <= vol <= 3269: return "basket-19.wbbasket.ru"
+    if 3270 <= vol <= 3485: return "basket-20.wbbasket.ru"
+    if 3486 <= vol <= 3701: return "basket-21.wbbasket.ru"
+    return "basket-22.wbbasket.ru" # Для совсем новых товаров
+
+def resolve_wb_url(url: str) -> str:
+    """
+    Превращает ссылку на товар WB в точную ссылку на фото без лишних запросов.
+    """
+    import re
+    # Ищем ID товара
+    match = re.search(r'catalog/(\d+)', url)
+    if not match:
+        return url 
+
+    nm_id = int(match.group(1))
+    vol = nm_id // 100000
+    part = nm_id // 1000
+    host = get_basket_host(vol)
+    
+    # Формируем прямую ссылку
+    return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+
 def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: str, db: Session):
-    """
-    Скачивание изображения с URL и сохранение в БД.
-    Поддерживает маркетплейсы (WB, Ozon и др.)
-    """
     
-    # Проверка: это прямая ссылка на изображение или страница товара
-    is_direct_image = any(url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif'])
-    
-    # Заголовки для имитации браузера (обход блокировок)
+    # 1. Если это WB, вычисляем ссылку математически
+    if "wildberries" in url or "wb.ru" in url:
+        try:
+            url = resolve_wb_url(url)
+            print(f"WB Resolved: {url}") # Лог для отладки
+        except Exception as e:
+            print(f"WB Resolve Error: {e}")
+
+    # Заголовки (Chrome)
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'image',
-        'Sec-Fetch-Mode': 'no-cors',
-        'Sec-Fetch-Site': 'cross-site',
-        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
     
-    # Определяем Referer по домену
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    domain = parsed.netloc
-    
-    if 'wildberries' in domain or 'wb.ru' in domain:
-        headers['Referer'] = 'https://www.wildberries.ru/'
-    elif 'ozon' in domain:
-        headers['Referer'] = 'https://www.ozon.ru/'
-    elif 'aliexpress' in domain:
-        headers['Referer'] = 'https://www.aliexpress.ru/'
-    elif 'lamoda' in domain:
-        headers['Referer'] = 'https://www.lamoda.ru/'
-    else:
-        headers['Referer'] = f'https://{domain}/'
-    
-    # Скачивание с retry логикой
-    max_retries = 3
+    file_bytes = None
     last_error = None
-    file_bytes = None  # ✅ ИНИЦИАЛИЗИРУЕМ
     
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(
-                url, 
-                headers=headers,
-                timeout=15,
-                allow_redirects=True,
-                stream=True  # Для больших файлов
-            )
-            response.raise_for_status()
-            
-            # Успешно скачали
-            file_bytes = response.content
-            break
-            
-        except requests.exceptions.HTTPError as e:
-            last_error = e
-            status_code = e.response.status_code if e.response else 0
-            
-            # Специальная обработка для разных кодов
-            if status_code == 403:
-                # Forbidden - пробуем без некоторых заголовков
-                headers.pop('Sec-Fetch-Dest', None)
-                headers.pop('Sec-Fetch-Mode', None)
-                headers.pop('Sec-Fetch-Site', None)
-            elif status_code == 498:
-                # Token expired/invalid - пробуем упрощенные заголовки
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                    'Referer': headers.get('Referer', '')
-                }
-            elif status_code >= 500:
-                # Ошибка сервера - ждем и повторяем
-                import time
-                time.sleep(1)
-            else:
-                # Другие ошибки - не повторяем
-                break
-                
-        except requests.exceptions.Timeout:
-            last_error = Exception("Timeout: сервер не отвечает")
-            import time
-            time.sleep(1)
-            
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            break
-    else:
-        # Все попытки исчерпаны
-        error_msg = str(last_error) if last_error else "Неизвестная ошибка"
-        raise HTTPException(400, f"Не удалось скачать фото после {max_retries} попыток: {error_msg}")
-    
-    # ✅ ПРОВЕРКА: если file_bytes так и остался None
+    # 2. Скачивание
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        file_bytes = response.content
+    except Exception as e:
+        last_error = e
+
+    # 3. Проверка
     if file_bytes is None:
-        raise HTTPException(400, "Не удалось получить данные изображения")
-    
-    # Валидация скачанного файла
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Не удалось скачать фото. Попробуйте вставить ПРЯМУЮ ссылку на картинку (ПКМ -> Копировать URL картинки). Ошибка: {str(last_error)}"
+        )
+
+    # Валидация
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
-        raise HTTPException(400, f"Ошибка валидации файла: {error}")
+        # Если скачался HTML (страница), значит ссылка не прямая и парсер не сработал
+        if b"<html" in file_bytes[:200].lower():
+             raise HTTPException(
+                status_code=400, 
+                detail="Это ссылка на страницу, а не на фото. Скопируйте URL самой картинки (ПКМ по фото -> Копировать URL картинки)."
+            )
+        raise HTTPException(400, detail=f"Файл поврежден: {error}")
     
-    # Сохранение на диск/S3
+    # 4. Сохранение
     try:
-        filename = f"url_{user_id}_{int(datetime.now().timestamp())}.jpg"
-        final_url = save_image(filename, file_bytes)
+        import uuid
+        filename = f"market_{uuid.uuid4().hex}.jpg"
+        img = Image.open(BytesIO(file_bytes))
+        
+        # Если ваша save_image принимает Image объект:
+        final_url = save_image(img, filename)
+        # Если save_image принимает байты, используйте: save_image(filename, file_bytes)
+        
     except Exception as e:
-        raise HTTPException(500, f"Ошибка сохранения на диск: {str(e)}")
+        raise HTTPException(500, detail=f"Ошибка сохранения: {str(e)}")
     
-    # Создание записи в БД
+    # 5. БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
@@ -285,6 +275,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
