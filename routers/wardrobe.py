@@ -18,6 +18,7 @@ from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 from .dependencies import get_current_user_id 
+from utils.scraper import parse_marketplace_url
 
 router = APIRouter(tags=["Wardrobe"])
 
@@ -268,14 +269,43 @@ async def add_item_by_marketplace(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    valid_name, name_error = validate_name(payload.name)
-    if not valid_name:
-        raise HTTPException(400, f"Ошибка названия: {name_error}")
-        
+    # 1. Проверяем валидность ссылки
+    if not payload.url.startswith("http"):
+         raise HTTPException(400, "Некорректная ссылка")
+
     loop = asyncio.get_event_loop()
+
+    # 2. ЗАПУСКАЕМ СКРАПИНГ (в отдельном потоке, чтобы не блокировать сервер)
+    # Пытаемся достать реальную картинку и название из ссылки на магазин
+    try:
+        # Запускаем синхронную функцию скрапинга в асинхронном режиме
+        scraped_img_url, scraped_title = await loop.run_in_executor(
+            None, 
+            lambda: parse_marketplace_url(payload.url)
+        )
+        
+        # Если пользователь не ввел свое название, берем с сайта
+        final_name = payload.name if payload.name and payload.name.strip() else scraped_title
+        # Обрезаем слишком длинные названия
+        final_name = (final_name[:27] + '...') if len(final_name) > 30 else final_name
+
+    except Exception as e:
+        # Если скрапер не справился (например сайт с сильной защитой),
+        # пробуем использовать ссылку как прямую картинку (план Б)
+        print(f"Scraper failed: {e}, trying direct download...")
+        scraped_img_url = payload.url
+        final_name = payload.name or "Покупка"
+
+    # Валидация имени
+    valid_name, name_error = validate_name(final_name)
+    if not valid_name:
+         # Если имя с сайта пришло кривое, ставим дефолтное
+         final_name = "Новая вещь"
+
+    # 3. Скачиваем и сохраняем картинку (уже по прямой ссылке, добытой скрапером)
     return await loop.run_in_executor(
         None, 
-        lambda: download_and_save_image_sync(payload.url, payload.name, user_id, "url_marketplace", db)
+        lambda: download_and_save_image_sync(scraped_img_url, final_name, user_id, "marketplace", db)
     )
 
 @router.delete("/delete")
@@ -300,6 +330,7 @@ def delete_item(
     db.delete(item)
     db.commit()
     return {"status": "success"}
+
 
 
 
