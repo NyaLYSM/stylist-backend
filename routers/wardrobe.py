@@ -117,26 +117,62 @@ def get_wb_image_url(nm_id: int) -> str:
 
 def get_marketplace_data(url: str):
     """
-    Парсер страниц. Использует curl_cffi (Chrome) для обхода защиты Cloudflare на Ozon/Lamoda.
+    Парсер страниц. Использует curl_cffi (Chrome) для обхода защиты Cloudflare.
+    ДЛЯ WILDBERRIES: Вместо математики CDN парсим HTML и берём картинку оттуда.
     """
     image_url = None
     title = None
 
-    # 1. WILDBERRIES (Быстрый путь)
+    # 1. WILDBERRIES - ПАРСИНГ HTML (Математика CDN больше не работает!)
     if "wildberries" in url or "wb.ru" in url:
         try:
-            match = re.search(r'catalog/(\d+)', url)
-            if match:
-                nm_id = int(match.group(1))
-                image_url = get_wb_image_url(nm_id)  # Используем новую функцию
-                title = "Wildberries Item"
+            logger.info(f"WB detected, parsing HTML instead of CDN math: {url}")
+            
+            # Используем curl_cffi для обхода Cloudflare
+            response = crequests.get(url, impersonate="chrome120", timeout=15, allow_redirects=True)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, "lxml")
+                
+                # Вариант 1: Ищем главное изображение товара
+                # WB использует <img> с классами product-page__img или carousel__item-img
+                main_img = soup.find("img", class_=lambda x: x and ("product-page__img" in x or "carousel__img" in x))
+                
+                if not main_img:
+                    # Вариант 2: Ищем через data-link или srcset
+                    main_img = soup.find("img", attrs={"data-link": True})
+                
+                if not main_img:
+                    # Вариант 3: OpenGraph
+                    og_image = soup.find("meta", property="og:image")
+                    if og_image:
+                        image_url = og_image.get("content")
+                
+                # Если нашли через img тег
+                if main_img and not image_url:
+                    # Проверяем разные атрибуты
+                    image_url = main_img.get("src") or main_img.get("data-src") or main_img.get("data-link")
+                
+                # Название товара
+                og_title = soup.find("meta", property="og:title")
+                if og_title:
+                    title = og_title.get("content")
+                elif soup.title:
+                    title = soup.title.string
+                
+                if title:
+                    title = title.split('|')[0].split('купить')[0].strip()
+                
+                logger.info(f"WB parsing result: image={image_url}, title={title}")
                 return image_url, title
+            else:
+                logger.error(f"WB page returned status {response.status_code}")
+                
         except Exception as e:
-            logger.error(f"WB Math failed: {e}")
+            logger.error(f"WB parsing failed: {e}")
 
-    # 2. ОСТАЛЬНЫЕ (Парсинг HTML через curl_cffi)
+    # 2. ОСТАЛЬНЫЕ МАРКЕТПЛЕЙСЫ (Парсинг HTML через curl_cffi)
     try:
-        # Притворяемся браузером Chrome 120
         response = crequests.get(url, impersonate="chrome120", timeout=15, allow_redirects=True)
         
         if response.status_code == 200:
@@ -289,5 +325,6 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
