@@ -59,30 +59,61 @@ def validate_image_bytes(file_bytes: bytes):
         return False, "Файл не является действительным изображением."
     return True, None
 
-def get_wb_host(vol: int) -> str:
+def get_wb_host(nm_id: int) -> str:
     """Математика серверов Wildberries"""
-    if 0 <= vol <= 143: return "basket-01.wbbasket.ru"
-    if 144 <= vol <= 287: return "basket-02.wbbasket.ru"
-    if 288 <= vol <= 431: return "basket-03.wbbasket.ru"
-    if 432 <= vol <= 719: return "basket-04.wbbasket.ru"
-    if 720 <= vol <= 1007: return "basket-05.wbbasket.ru"
-    if 1008 <= vol <= 1061: return "basket-06.wbbasket.ru"
-    if 1062 <= vol <= 1115: return "basket-07.wbbasket.ru"
-    if 1116 <= vol <= 1169: return "basket-08.wbbasket.ru"
-    if 1170 <= vol <= 1313: return "basket-09.wbbasket.ru"
-    if 1314 <= vol <= 1601: return "basket-10.wbbasket.ru"
-    if 1602 <= vol <= 1655: return "basket-11.wbbasket.ru"
-    if 1656 <= vol <= 1919: return "basket-12.wbbasket.ru"
-    if 1920 <= vol <= 2045: return "basket-13.wbbasket.ru"
-    if 2046 <= vol <= 2189: return "basket-14.wbbasket.ru"
-    if 2190 <= vol <= 2405: return "basket-15.wbbasket.ru"
-    if 2406 <= vol <= 2621: return "basket-16.wbbasket.ru"
-    if 2622 <= vol <= 2837: return "basket-17.wbbasket.ru"
-    if 2838 <= vol <= 3053: return "basket-18.wbbasket.ru"
-    if 3054 <= vol <= 3269: return "basket-19.wbbasket.ru"
-    if 3270 <= vol <= 3485: return "basket-20.wbbasket.ru"
-    if 3486 <= vol <= 3701: return "basket-21.wbbasket.ru"
-    return "basket-22.wbbasket.ru"
+    vol = nm_id // 100000
+    part = nm_id // 1000
+    
+    # Определяем хост на основе vol
+    if vol >= 0 and vol <= 143:
+        basket = "01"
+    elif vol >= 144 and vol <= 287:
+        basket = "02"
+    elif vol >= 288 and vol <= 431:
+        basket = "03"
+    elif vol >= 432 and vol <= 719:
+        basket = "04"
+    elif vol >= 720 and vol <= 1007:
+        basket = "05"
+    elif vol >= 1008 and vol <= 1061:
+        basket = "06"
+    elif vol >= 1062 and vol <= 1115:
+        basket = "07"
+    elif vol >= 1116 and vol <= 1169:
+        basket = "08"
+    elif vol >= 1170 and vol <= 1313:
+        basket = "09"
+    elif vol >= 1314 and vol <= 1601:
+        basket = "10"
+    elif vol >= 1602 and vol <= 1655:
+        basket = "11"
+    elif vol >= 1656 and vol <= 1919:
+        basket = "12"
+    elif vol >= 1920 and vol <= 2045:
+        basket = "13"
+    elif vol >= 2046 and vol <= 2189:
+        basket = "14"
+    elif vol >= 2190 and vol <= 2405:
+        basket = "15"
+    elif vol >= 2406 and vol <= 2621:
+        basket = "16"
+    elif vol >= 2622 and vol <= 2837:
+        basket = "17"
+    elif vol >= 2838 and vol <= 3053:
+        basket = "18"
+    elif vol >= 3054 and vol <= 3269:
+        basket = "19"
+    elif vol >= 3270 and vol <= 3485:
+        basket = "20"
+    elif vol >= 3486 and vol <= 3701:
+        basket = "21"
+    else:
+        basket = "22"
+    
+    host = f"basket-{basket}.wbbasket.ru"
+    
+    # Формируем URL с правильной структурой
+    return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
 
 def get_marketplace_data(url: str):
     """
@@ -93,16 +124,13 @@ def get_marketplace_data(url: str):
 
     # 1. WILDBERRIES (Быстрый путь)
     if "wildberries" in url or "wb.ru" in url:
-        try:
-            match = re.search(r'catalog/(\d+)', url)
-            if match:
-                nm_id = int(match.group(1))
-                vol = nm_id // 100000
-                part = nm_id // 1000
-                host = get_wb_host(vol)
-                image_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
-                title = "Wildberries Item"
-                return image_url, title
+    try:
+        match = re.search(r'catalog/(\d+)', url)
+        if match:
+            nm_id = int(match.group(1))
+            image_url = get_wb_image_url(nm_id)  # Используем новую функцию
+            title = "Wildberries Item"
+            return image_url, title
         except Exception as e:
             logger.error(f"WB Math failed: {e}")
 
@@ -258,3 +286,4 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
