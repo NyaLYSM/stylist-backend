@@ -62,39 +62,95 @@ def validate_image_bytes(file_bytes: bytes):
 def get_marketplace_data(url: str):
     """
     Парсер страниц маркетплейсов.
-    Для ВСЕХ сайтов (включая WB) используем парсинг HTML через curl_cffi.
+    Для WB используем публичный API, для остальных — парсинг HTML.
     """
     image_url = None
     title = None
 
+    # 1. WILDBERRIES - Специальный обработчик
+    if "wildberries" in url or "wb.ru" in url:
+        try:
+            # Извлекаем артикул
+            match = re.search(r'catalog/(\d+)', url)
+            if not match:
+                logger.error("Could not extract article number from WB URL")
+                return None, None
+            
+            nm_id = int(match.group(1))
+            logger.info(f"WB article detected: {nm_id}")
+            
+            # Используем ПУБЛИЧНЫЙ API для получения данных о товаре
+            # Этот endpoint не требует авторизации и работает стабильно
+            api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+            
+            logger.info(f"Fetching WB public API: {api_url}")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+                'Accept': 'application/json',
+                'Accept-Language': 'ru-RU,ru;q=0.9',
+                'Origin': 'https://www.wildberries.ru',
+                'Referer': 'https://www.wildberries.ru/'
+            }
+            
+            response = requests.get(api_url, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Структура ответа: {"data": {"products": [...]}}
+                if 'data' in data and 'products' in data['data'] and len(data['data']['products']) > 0:
+                    product = data['data']['products'][0]
+                    
+                    # Название товара
+                    if 'name' in product:
+                        title = product['name']
+                    
+                    # Картинка - строится из id товара
+                    if 'id' in product:
+                        prod_id = product['id']
+                        
+                        # Новая структура URL от WB (2024-2025)
+                        # Используем CDN images.wbstatic.net
+                        vol = prod_id // 100000
+                        part = prod_id // 1000
+                        
+                        # Пробуем разные форматы
+                        image_formats = [
+                            f"https://images.wbstatic.net/big/new/{part}0000/{prod_id}-1.jpg",
+                            f"https://images.wbstatic.net/c516x688/new/{part}0000/{prod_id}-1.jpg",
+                            f"https://basket-{(vol % 10 + 1):02d}.wbbasket.ru/vol{vol}/part{part}/{prod_id}/images/big/1.jpg"
+                        ]
+                        
+                        # Берём первый формат (самый надёжный)
+                        image_url = image_formats[0]
+                    
+                    logger.info(f"WB API success: image={image_url}, title={title}")
+                    return image_url, title
+                else:
+                    logger.warning("WB API returned empty products list")
+            else:
+                logger.error(f"WB API returned status {response.status_code}")
+        
+        except Exception as e:
+            logger.error(f"WB processing failed: {e}")
+        
+        # Если ничего не получилось - возвращаем None
+        return None, None
+
+    # 2. ОСТАЛЬНЫЕ МАРКЕТПЛЕЙСЫ - Парсинг HTML
     try:
-        # Используем curl_cffi для обхода Cloudflare/защит
         logger.info(f"Parsing URL: {url}")
         response = crequests.get(url, impersonate="chrome120", timeout=15, allow_redirects=True)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "lxml")
             
-            # Ищем картинку через OpenGraph (работает для WB, Ozon, Lamoda и др.)
+            # Картинка через OpenGraph
             og_image = soup.find("meta", property="og:image")
             if og_image:
                 image_url = og_image.get("content")
                 logger.info(f"Found og:image: {image_url}")
-            
-            # Если не нашли через og:image, пробуем другие методы
-            if not image_url:
-                # Для WB: ищем главное изображение товара
-                if "wildberries" in url or "wb.ru" in url:
-                    # Вариант 1: Ищем через data-link
-                    main_img = soup.find("img", attrs={"data-link": True})
-                    if main_img:
-                        image_url = main_img.get("data-link") or main_img.get("src")
-                    
-                    # Вариант 2: Ищем класс product-page__img
-                    if not image_url:
-                        main_img = soup.find("img", class_=lambda x: x and "product-page__img" in x)
-                        if main_img:
-                            image_url = main_img.get("src") or main_img.get("data-src")
             
             # Название товара
             og_title = soup.find("meta", property="og:title")
@@ -107,7 +163,6 @@ def get_marketplace_data(url: str):
                 title = title.split('|')[0].split('купить')[0].strip()
             
             logger.info(f"Parsing result: image={image_url}, title={title}")
-        
         else:
             logger.error(f"Page returned status {response.status_code}")
 
@@ -243,6 +298,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
