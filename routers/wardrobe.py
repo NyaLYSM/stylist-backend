@@ -59,61 +59,31 @@ def validate_image_bytes(file_bytes: bytes):
         return False, "Файл не является действительным изображением."
     return True, None
 
-def get_wb_image_url(nm_id: int) -> str:
-    """
-    Современная формула построения URL изображений Wildberries (2024-2025).
-    """
-    vol = nm_id // 100000
-    part = nm_id // 1000
-    
-    # Определяем хост на основе vol
-    if vol >= 0 and vol <= 143:
-        basket = "01"
-    elif vol >= 144 and vol <= 287:
-        basket = "02"
-    elif vol >= 288 and vol <= 431:
-        basket = "03"
-    elif vol >= 432 and vol <= 719:
-        basket = "04"
-    elif vol >= 720 and vol <= 1007:
-        basket = "05"
-    elif vol >= 1008 and vol <= 1061:
-        basket = "06"
-    elif vol >= 1062 and vol <= 1115:
-        basket = "07"
-    elif vol >= 1116 and vol <= 1169:
-        basket = "08"
-    elif vol >= 1170 and vol <= 1313:
-        basket = "09"
-    elif vol >= 1314 and vol <= 1601:
-        basket = "10"
-    elif vol >= 1602 and vol <= 1655:
-        basket = "11"
-    elif vol >= 1656 and vol <= 1919:
-        basket = "12"
-    elif vol >= 1920 and vol <= 2045:
-        basket = "13"
-    elif vol >= 2046 and vol <= 2189:
-        basket = "14"
-    elif vol >= 2190 and vol <= 2405:
-        basket = "15"
-    elif vol >= 2406 and vol <= 2621:
-        basket = "16"
-    elif vol >= 2622 and vol <= 2837:
-        basket = "17"
-    elif vol >= 2838 and vol <= 3053:
-        basket = "18"
-    elif vol >= 3054 and vol <= 3269:
-        basket = "19"
-    elif vol >= 3270 and vol <= 3485:
-        basket = "20"
-    elif vol >= 3486 and vol <= 3701:
-        basket = "21"
-    else:
-        basket = "22"
-    
-    host = f"basket-{basket}.wbbasket.ru"
-    return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+def get_wb_basket_number(vol: int) -> str:
+    """Возвращает номер корзины WB в формате '01', '02' и т.д."""
+    if vol <= 143: return "01"
+    elif vol <= 287: return "02"
+    elif vol <= 431: return "03"
+    elif vol <= 719: return "04"
+    elif vol <= 1007: return "05"
+    elif vol <= 1061: return "06"
+    elif vol <= 1115: return "07"
+    elif vol <= 1169: return "08"
+    elif vol <= 1313: return "09"
+    elif vol <= 1601: return "10"
+    elif vol <= 1655: return "11"
+    elif vol <= 1919: return "12"
+    elif vol <= 2045: return "13"
+    elif vol <= 2189: return "14"
+    elif vol <= 2405: return "15"
+    elif vol <= 2621: return "16"
+    elif vol <= 2837: return "17"
+    elif vol <= 3053: return "18"
+    elif vol <= 3269: return "19"
+    elif vol <= 3485: return "20"
+    elif vol <= 3701: return "21"
+    else: return "22"
+
 
 def get_marketplace_data(url: str):
     """
@@ -134,16 +104,19 @@ def get_marketplace_data(url: str):
             nm_id = int(match.group(1))
             logger.info(f"WB article detected: {nm_id}")
             
-            # Используем ПУБЛИЧНЫЙ API карточек WB (не требует авторизации)
-            # Это официальный endpoint, который использует сам сайт WB
+            # Вычисляем параметры для URL
             vol = nm_id // 100000
             part = nm_id // 1000
+            basket = get_wb_basket_number(vol)
             
-            api_url = f"https://basket-{vol:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+            logger.info(f"WB params: vol={vol}, part={part}, basket={basket}")
+            
+            # Используем ПУБЛИЧНЫЙ API карточек WB
+            api_url = f"https://basket-{basket}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
             
             logger.info(f"Fetching WB API: {api_url}")
             
-            # Используем обычный requests для API (не crequests)
+            # Используем обычный requests для API
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'application/json'
@@ -158,10 +131,9 @@ def get_marketplace_data(url: str):
                 if 'media' in data and 'images' in data['media']:
                     images = data['media']['images']
                     if images and len(images) > 0:
-                        # Берём первое изображение в большом размере
+                        # Берём первое изображение
                         first_img = images[0]
-                        # Формат: https://basket-XX.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/{N}.jpg
-                        image_url = f"https://basket-{vol:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/{first_img}.jpg"
+                        image_url = f"https://basket-{basket}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/{first_img}.jpg"
                 
                 # Название товара
                 if 'imt_name' in data:
@@ -172,12 +144,12 @@ def get_marketplace_data(url: str):
                 if image_url:
                     return image_url, title
             else:
-                logger.error(f"WB API returned status {response.status_code}")
+                logger.warning(f"WB API returned status {response.status_code}")
             
             # Fallback: Если API не сработал, пробуем прямую ссылку на первое фото
             if not image_url:
                 logger.info("WB API failed, trying direct image URL")
-                image_url = f"https://basket-{vol:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+                image_url = f"https://basket-{basket}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
                 title = f"Товар WB {nm_id}"
                 return image_url, title
                 
@@ -339,6 +311,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
