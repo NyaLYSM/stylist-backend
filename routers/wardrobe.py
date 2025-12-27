@@ -1,28 +1,35 @@
-# routers/wardrobe.py
-
 import os
 import uuid
-import requests 
-import asyncio 
-from datetime import datetime 
-from io import BytesIO 
-from PIL import Image 
+import asyncio
+import re
+import logging
+from datetime import datetime
+from io import BytesIO
+from PIL import Image
 
-from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form, Query
-from pydantic import BaseModel 
+# ВАЖНО: Используем curl_cffi вместо requests для обхода защиты (498/403 ошибок)
+# Если у вас нет этой библиотеки, добавьте в requirements.txt: curl_cffi
+from curl_cffi import requests as crequests
+from bs4 import BeautifulSoup
+
+from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-# Абсолютные импорты
+# Импорты из вашего проекта
 from database import get_db
-from models import WardrobeItem 
+from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
-from .dependencies import get_current_user_id 
-from utils.scraper import parse_marketplace_url
+from .dependencies import get_current_user_id
+
+# Настройка логгера
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Wardrobe"])
 
-# --- СХЕМЫ ---
+# --- Pydantic Models ---
 class ItemUrlPayload(BaseModel):
     name: str
     url: str
@@ -31,31 +38,29 @@ class ItemResponse(BaseModel):
     id: int
     name: str
     image_url: str
-    item_type: str  # ✅ ИСПРАВЛЕНО: было source_type
-    created_at: datetime 
+    item_type: str
+    created_at: datetime
     
     class Config:
         from_attributes = True
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- Helper: Валидация байтов картинки ---
 def validate_image_bytes(file_bytes: bytes):
-    MAX_SIZE_MB = 3
+    MAX_SIZE_MB = 10
     if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
         return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
     try:
         img = Image.open(BytesIO(file_bytes))
-        img.verify() 
+        img.verify()
         if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
              return False, "Неподдерживаемый формат изображения."
     except Exception:
         return False, "Файл не является действительным изображением."
     return True, None
 
-
-import re
-
-# 1. Математика для Wildberries (оставляем, она самая быстрая)
-def get_basket_host(vol: int) -> str:
+# --- Helper: Математика серверов Wildberries ---
+def get_wb_host(vol: int) -> str:
+    """Возвращает хост сервера WB в зависимости от ID товара."""
     if 0 <= vol <= 143: return "basket-01.wbbasket.ru"
     if 144 <= vol <= 287: return "basket-02.wbbasket.ru"
     if 288 <= vol <= 431: return "basket-03.wbbasket.ru"
@@ -79,13 +84,16 @@ def get_basket_host(vol: int) -> str:
     if 3486 <= vol <= 3701: return "basket-21.wbbasket.ru"
     return "basket-22.wbbasket.ru"
 
-def resolve_image_url(url: str) -> str:
+# --- Helper: Получение данных с маркетплейса ---
+def get_marketplace_data(url: str):
     """
-    Универсальный поиск картинки.
-    1. WB -> Математика.
-    2. Остальные -> Парсинг Open Graph (og:image).
+    Пытается найти прямую ссылку на фото и название товара.
+    Использует curl_cffi для имитации браузера Chrome.
     """
-    # --- ЛОГИКА WB ---
+    image_url = None
+    title = None
+
+    # 1. WILDBERRIES (Быстрый путь через математику)
     if "wildberries" in url or "wb.ru" in url:
         try:
             match = re.search(r'catalog/(\d+)', url)
@@ -93,96 +101,104 @@ def resolve_image_url(url: str) -> str:
                 nm_id = int(match.group(1))
                 vol = nm_id // 100000
                 part = nm_id // 1000
-                host = get_basket_host(vol)
-                return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
-        except:
-            pass # Если не вышло, пробуем общий метод
+                host = get_wb_host(vol)
+                image_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+                title = "Wildberries Item" # Название уточним позже или оставим дефолтное
+                return image_url, title
+        except Exception as e:
+            logger.error(f"WB Math failed: {e}")
 
-    # --- ОБЩАЯ ЛОГИКА (LAMODA, OZON, ALIEXPRESS и др.) ---
-    # Мы скачиваем HTML страницы и ищем там ссылку на картинку
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-    }
-    
+    # 2. УНИВЕРСАЛЬНЫЙ ПАРСЕР (Для Ozon, Lamoda, или если WB Math не сработал)
     try:
-        # Скачиваем только первые 100кб страницы, чтобы не грузить весь сайт (обычно мета-теги вверху)
-        with requests.get(url, headers=headers, stream=True, timeout=10) as r:
-            # Ozon иногда возвращает 403 (защита), тогда этот метод упадет и вернет исходный URL
-            if r.status_code == 200:
-                chunk = next(r.iter_content(chunk_size=100000))
-                html_content = chunk.decode('utf-8', errors='ignore')
-                
-                # Ищем тег <meta property="og:image" content="...">
-                # Это стандарт для всех магазинов
-                og_image = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html_content)
-                if og_image:
-                    return og_image.group(1)
-    except Exception as e:
-        print(f"Ошибка парсинга страницы: {e}")
-
-    # Если ничего не нашли, возвращаем то, что дал юзер (авось это прямая ссылка)
-    return url
-
-
-# --- ГЛАВНАЯ ФУНКЦИЯ ЗАГРУЗКИ ---
-
-def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: str, db: Session):
-    
-    # 1. Пытаемся найти прямую ссылку на фото
-    target_url = resolve_image_url(url)
-    print(f"Source: {url} -> Target: {target_url}")
-
-    # Заголовки для скачивания КАРТИНКИ
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
-    
-    file_bytes = None
-    last_error = None
-    
-    # 2. Скачиваем
-    try:
-        response = requests.get(target_url, headers=headers, timeout=15)
-        response.raise_for_status()
-        file_bytes = response.content
-    except Exception as e:
-        last_error = e
-
-    # 3. Проверка успеха
-    if file_bytes is None:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Не удалось скачать изображение. Ошибка: {str(last_error)}. Попробуйте прямую ссылку на фото."
+        # impersonate="chrome120" — ключевой момент для обхода 403/498 ошибок
+        response = crequests.get(
+            url, 
+            impersonate="chrome120", 
+            timeout=15,
+            allow_redirects=True
         )
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, "lxml")
 
-    # Валидация
+            # Ищем картинку (OG Tag - стандарт для всех магазинов)
+            og_image = soup.find("meta", property="og:image")
+            if og_image and og_image.get("content"):
+                image_url = og_image["content"]
+
+            # Ищем название
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                title = og_title["content"]
+            elif soup.title:
+                title = soup.title.string
+            
+            # Чистим название от мусора
+            if title:
+                title = title.split('|')[0].split('купить')[0].strip()
+
+    except Exception as e:
+        logger.error(f"Scraper error for {url}: {e}")
+    
+    return image_url, title
+
+# --- Helper: Загрузка прямой ссылки ---
+def download_direct_url(image_url: str, name: str, user_id: int, item_type: str, db: Session):
+    """
+    Скачивает картинку по прямой ссылке, сохраняет на диск и пишет в БД.
+    """
+    logger.info(f"Downloading: {image_url}")
+    
+    # Скачиваем через curl_cffi, так как сервера картинок тоже могут иметь защиту
+    try:
+        response = crequests.get(
+            image_url, 
+            impersonate="chrome120", 
+            timeout=20
+        )
+        if response.status_code != 200:
+            raise HTTPException(400, f"Ошибка скачивания ({response.status_code}). Ссылка недоступна.")
+            
+        file_bytes = response.content
+        
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось скачать фото: {str(e)}")
+
+    # Валидация контента
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
-        # Если скачался HTML, значит парсер не сработал
+        # Проверка, не вернул ли сервер HTML страницу вместо картинки (ошибка парсера)
         if b"<html" in file_bytes[:500].lower():
-             raise HTTPException(
-                status_code=400, 
-                detail=f"Не удалось найти картинку на странице. Сайт защищен от ботов. Пожалуйста, скопируйте URL самой картинки (ПКМ -> Копировать URL картинки)."
-            )
-        raise HTTPException(400, detail=f"Файл поврежден: {error}")
+             raise HTTPException(400, "Сервер вернул страницу сайта вместо картинки. Попробуйте прямую ссылку на фото.")
+        raise HTTPException(400, error)
     
-    # 4. Сохранение
+    # Сохранение на диск
     try:
-        import uuid
-        filename = f"market_{uuid.uuid4().hex}.jpg"
+        ext = ".jpg" # По умолчанию
+        # Пытаемся определить формат
+        try:
+            img_head = Image.open(BytesIO(file_bytes))
+            ext = f".{img_head.format.lower()}"
+        except:
+            pass
+
+        filename = f"market_{uuid.uuid4().hex}{ext}"
+        
+        # Конвертация в PIL Image для вашей функции save_image
         img = Image.open(BytesIO(file_bytes))
         
-        # Конвертируем в RGB (если png/webp)
+        # Приводим к RGB, если это PNG/WEBP с прозрачностью
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
-            
+            filename = filename.replace(".png", ".jpg").replace(".webp", ".jpg")
+        
+        # Используем вашу функцию save_image из utils.storage
         final_url = save_image(img, filename)
         
     except Exception as e:
-        raise HTTPException(500, detail=f"Ошибка сохранения: {str(e)}")
+        raise HTTPException(500, f"Ошибка сохранения на сервере: {e}")
     
-    # 5. БД
+    # Запись в БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
@@ -193,10 +209,12 @@ def download_and_save_image_sync(url: str, name: str, user_id: int, item_type: s
     db.add(item)
     db.commit()
     db.refresh(item)
-    
     return item
 
-# --- РОУТЫ ---
+
+# ==========================
+# ROUTES
+# ==========================
 
 @router.get("/items", response_model=list[ItemResponse]) 
 def get_wardrobe_items(
@@ -213,30 +231,44 @@ async def add_item_file(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
+    # Валидация имени
     valid_name, name_error = validate_name(name)
     if not valid_name:
-        raise HTTPException(400, f"Ошибка названия: {name_error}")
+        raise HTTPException(400, name_error)
 
     # Читаем файл
     file_bytes = await file.read()
     await file.close()
     
-    # Валидация
+    # Валидация файла
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
-        raise HTTPException(400, f"Ошибка файла: {error}")
+        raise HTTPException(400, error)
 
     # Сохранение
     try:
-        final_url = save_image(file.filename, file_bytes)
+        # Генерируем уникальное имя
+        import uuid
+        ext = os.path.splitext(file.filename)[1]
+        if not ext: ext = ".jpg"
+        filename = f"upload_{uuid.uuid4().hex}{ext}"
+
+        img = Image.open(BytesIO(file_bytes))
+        # Конвертируем если нужно
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            filename = filename.rsplit('.', 1)[0] + ".jpg"
+
+        final_url = save_image(img, filename)
+
     except Exception as e:
         raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
 
-    # Создание записи в БД
+    # БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
-        item_type="file",  # ✅ ИСПРАВЛЕНО
+        item_type="file",
         image_url=final_url,
         created_at=datetime.utcnow()
     )
@@ -244,68 +276,53 @@ async def add_item_file(
     db.commit()
     db.refresh(item)
     return item
-    
-# 2. Добавление по URL (Ручной)
+
 @router.post("/add-manual-url", response_model=ItemResponse)
 async def add_item_by_manual_url(
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    valid_name, name_error = validate_name(payload.name)
-    if not valid_name:
-        raise HTTPException(400, f"Ошибка названия: {name_error}")
-        
+    # Этот метод используется, когда юзер вводит ПРЯМУЮ ссылку на картинку
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, 
-        lambda: download_and_save_image_sync(payload.url, payload.name, user_id, "url_manual", db)
+        lambda: download_direct_url(payload.url, payload.name, user_id, "url_manual", db)
     )
 
-# 3. Добавление по URL (Маркетплейс)
 @router.post("/add-marketplace", response_model=ItemResponse)
 async def add_item_by_marketplace(
     payload: ItemUrlPayload,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id)
 ):
-    # 1. Проверяем валидность ссылки
-    if not payload.url.startswith("http"):
-         raise HTTPException(400, "Некорректная ссылка")
-
     loop = asyncio.get_event_loop()
 
-    # 2. ЗАПУСКАЕМ СКРАПИНГ (в отдельном потоке, чтобы не блокировать сервер)
-    # Пытаемся достать реальную картинку и название из ссылки на магазин
-    try:
-        # Запускаем синхронную функцию скрапинга в асинхронном режиме
-        scraped_img_url, scraped_title = await loop.run_in_executor(
-            None, 
-            lambda: parse_marketplace_url(payload.url)
-        )
-        
-        # Если пользователь не ввел свое название, берем с сайта
-        final_name = payload.name if payload.name and payload.name.strip() else scraped_title
-        # Обрезаем слишком длинные названия
-        final_name = (final_name[:27] + '...') if len(final_name) > 30 else final_name
+    # 1. ПАРСИНГ: Пытаемся найти картинку на странице магазина
+    # Запускаем в отдельном потоке, чтобы не блокировать сервер
+    found_image, found_title = await loop.run_in_executor(
+        None, 
+        lambda: get_marketplace_data(payload.url)
+    )
 
-    except Exception as e:
-        # Если скрапер не справился (например сайт с сильной защитой),
-        # пробуем использовать ссылку как прямую картинку (план Б)
-        print(f"Scraper failed: {e}, trying direct download...")
-        scraped_img_url = payload.url
-        final_name = payload.name or "Покупка"
+    # 2. Определение названия
+    final_name = payload.name
+    if not final_name and found_title:
+        final_name = found_title[:30] # Обрезаем длинные названия
+    if not final_name:
+        final_name = "Покупка"
 
-    # Валидация имени
-    valid_name, name_error = validate_name(final_name)
-    if not valid_name:
-         # Если имя с сайта пришло кривое, ставим дефолтное
-         final_name = "Новая вещь"
+    # 3. Выбор ссылки для скачивания
+    # Если парсер нашел картинку - берем её. Если нет - берем исходный URL (на случай если это прямая ссылка)
+    target_url = found_image if found_image else payload.url
+    
+    if not target_url:
+         raise HTTPException(400, "Не удалось найти изображение по этой ссылке.")
 
-    # 3. Скачиваем и сохраняем картинку (уже по прямой ссылке, добытой скрапером)
+    # 4. СКАЧИВАНИЕ
     return await loop.run_in_executor(
         None, 
-        lambda: download_and_save_image_sync(scraped_img_url, final_name, user_id, "marketplace", db)
+        lambda: download_direct_url(target_url, final_name, user_id, "marketplace", db)
     )
 
 @router.delete("/delete")
@@ -325,27 +342,8 @@ def delete_item(
     try:
         delete_image(item.image_url)
     except:
-        pass # Игнорируем ошибки удаления файла, главное удалить из БД
+        pass # Не страшно, если файла уже нет
 
     db.delete(item)
     db.commit()
     return {"status": "success"}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
