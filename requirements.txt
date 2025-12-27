@@ -14,3 +14,4 @@ botocore
 python-jose[cryptography]
 lxml
 passlib[bcrypt]
+curl_cffi
