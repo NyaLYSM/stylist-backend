@@ -59,8 +59,10 @@ def validate_image_bytes(file_bytes: bytes):
         return False, "Файл не является действительным изображением."
     return True, None
 
-def get_wb_host(nm_id: int) -> str:
-    """Математика серверов Wildberries"""
+def get_wb_image_url(nm_id: int) -> str:
+    """
+    Современная формула построения URL изображений Wildberries (2024-2025).
+    """
     vol = nm_id // 100000
     part = nm_id // 1000
     
@@ -111,8 +113,6 @@ def get_wb_host(nm_id: int) -> str:
         basket = "22"
     
     host = f"basket-{basket}.wbbasket.ru"
-    
-    # Формируем URL с правильной структурой
     return f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
 
 def get_marketplace_data(url: str):
@@ -124,13 +124,13 @@ def get_marketplace_data(url: str):
 
     # 1. WILDBERRIES (Быстрый путь)
     if "wildberries" in url or "wb.ru" in url:
-    try:
-        match = re.search(r'catalog/(\d+)', url)
-        if match:
-            nm_id = int(match.group(1))
-            image_url = get_wb_image_url(nm_id)  # Используем новую функцию
-            title = "Wildberries Item"
-            return image_url, title
+        try:
+            match = re.search(r'catalog/(\d+)', url)
+            if match:
+                nm_id = int(match.group(1))
+                image_url = get_wb_image_url(nm_id)  # Используем новую функцию
+                title = "Wildberries Item"
+                return image_url, title
         except Exception as e:
             logger.error(f"WB Math failed: {e}")
 
@@ -144,12 +144,15 @@ def get_marketplace_data(url: str):
             
             # Ищем картинку
             og_image = soup.find("meta", property="og:image")
-            if og_image: image_url = og_image.get("content")
+            if og_image:
+                image_url = og_image.get("content")
             
             # Ищем название
             og_title = soup.find("meta", property="og:title")
-            if og_title: title = og_title.get("content")
-            elif soup.title: title = soup.title.string
+            if og_title:
+                title = og_title.get("content")
+            elif soup.title:
+                title = soup.title.string
             
             if title:
                 title = title.split('|')[0].split('купить')[0].strip()
@@ -286,4 +289,5 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
