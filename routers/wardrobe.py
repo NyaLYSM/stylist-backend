@@ -7,9 +7,9 @@ from datetime import datetime
 from io import BytesIO
 from PIL import Image
 
-# requests - для скачивания картинок (стабильно)
+# requests - для скачивания картинок
 import requests
-# curl_cffi - для парсинга страниц Ozon/Lamoda (обход защиты)
+# curl_cffi - для чтения страниц магазинов (обход защиты)
 from curl_cffi import requests as crequests
 from bs4 import BeautifulSoup
 
@@ -17,20 +17,18 @@ from fastapi import APIRouter, Depends, UploadFile, HTTPException, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-# Импорты из вашего проекта
 from database import get_db
 from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 from .dependencies import get_current_user_id
 
-# Настройка логгера
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Wardrobe"])
 
-# --- Pydantic Models ---
+# --- Models ---
 class ItemUrlPayload(BaseModel):
     name: str
     url: str
@@ -41,7 +39,6 @@ class ItemResponse(BaseModel):
     image_url: str
     item_type: str
     created_at: datetime
-    
     class Config:
         from_attributes = True
 
@@ -49,22 +46,18 @@ class ItemResponse(BaseModel):
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 10
     if len(file_bytes) > MAX_SIZE_MB * 1024 * 1024:
-        return False, f"Размер файла превышает {MAX_SIZE_MB} МБ."
+        return False, f"Размер файла > {MAX_SIZE_MB} МБ."
     try:
         img = Image.open(BytesIO(file_bytes))
         img.verify()
         if img.format not in ['JPEG', 'PNG', 'GIF', 'WEBP']:
-             return False, "Неподдерживаемый формат изображения."
+             return False, "Неверный формат фото."
     except Exception:
-        return False, "Файл не является действительным изображением."
+        return False, "Файл не является фото."
     return True, None
 
-# --- ГЛАВНАЯ ЛОГИКА WB (ИСПРАВЛЕНАЯ) ---
-def get_wb_host(vol: int) -> str:
-    """
-    Возвращает правильный хост корзины.
-    Используем wbbasket.ru - он доступен из-за границы (Render).
-    """
+# Запасная математика (на случай, если парсинг страницы упадет)
+def get_wb_host_fallback(vol: int) -> str:
     if 0 <= vol <= 143: return "basket-01.wbbasket.ru"
     if 144 <= vol <= 287: return "basket-02.wbbasket.ru"
     if 288 <= vol <= 431: return "basket-03.wbbasket.ru"
@@ -90,37 +83,27 @@ def get_wb_host(vol: int) -> str:
 
 def get_marketplace_data(url: str):
     """
-    Возвращает прямую ссылку на фото.
+    1. Пытается зайти на страницу и найти og:image (самый надежный способ).
+    2. Если не вышло и это WB — пробует математику (fallback).
     """
     image_url = None
     title = None
-
-    # 1. WILDBERRIES (Строго через Basket API, без wbstatic)
-    if "wildberries" in url or "wb.ru" in url:
-        try:
-            match = re.search(r'catalog/(\d+)', url)
-            if match:
-                nm_id = int(match.group(1))
-                vol = nm_id // 100000
-                part = nm_id // 1000
-                host = get_wb_host(vol)
-                # Генерируем ссылку на wbbasket.ru
-                image_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
-                title = "Wildberries Item"
-                logger.info(f"Generated WB Basket URL: {image_url}")
-                return image_url, title
-        except Exception as e:
-            logger.error(f"WB Calculation failed: {e}")
-
-    # 2. ОСТАЛЬНЫЕ (Ozon, Lamoda - парсинг через Chrome)
+    
+    # Попытка 1: Честный парсинг страницы (Universal)
     try:
-        response = crequests.get(url, impersonate="chrome120", timeout=10, allow_redirects=True)
+        # impersonate="chrome120" — притворяемся браузером
+        response = crequests.get(url, impersonate="chrome120", timeout=15, allow_redirects=True)
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "lxml")
             
+            # Ищем картинку
             og_image = soup.find("meta", property="og:image")
-            if og_image: image_url = og_image.get("content")
-            
+            if og_image: 
+                image_url = og_image.get("content")
+                logger.info(f"Found og:image: {image_url}")
+
+            # Ищем название
             og_title = soup.find("meta", property="og:title")
             if og_title: title = og_title.get("content")
             elif soup.title: title = soup.title.string
@@ -128,39 +111,48 @@ def get_marketplace_data(url: str):
             if title: title = title.split('|')[0].strip()
 
     except Exception as e:
-        logger.error(f"Scraper error: {e}")
+        logger.warning(f"Scraper error: {e}")
+
+    # Попытка 2: Математика WB (только если парсинг не нашел картинку)
+    if not image_url and ("wildberries" in url or "wb.ru" in url):
+        try:
+            logger.info("Scraper failed, trying WB Math fallback...")
+            match = re.search(r'catalog/(\d+)', url)
+            if match:
+                nm_id = int(match.group(1))
+                vol = nm_id // 100000
+                part = nm_id // 1000
+                host = get_wb_host_fallback(vol)
+                image_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+                title = title or "Wildberries Item"
+        except Exception as e:
+            logger.error(f"WB Math failed: {e}")
     
     return image_url, title
 
 def download_direct_url(image_url: str, name: str, user_id: int, item_type: str, db: Session):
-    logger.info(f"Downloading image from: {image_url}")
+    logger.info(f"Downloading from: {image_url}")
     
+    # Убрали Referer, так как иногда он мешает загрузке с CDN
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.wildberries.ru/' # Важно для некоторых серверов
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
     try:
-        # Уменьшил таймаут до 10 сек, чтобы пользователь не ждал вечно
-        response = requests.get(image_url, headers=headers, timeout=10, stream=True)
+        response = requests.get(image_url, headers=headers, timeout=15, stream=True)
         
         if response.status_code != 200:
             logger.error(f"Download failed: {response.status_code}")
-            # Если wbbasket не ответил, пробуем запасной домен im.wberries.ru (редкий кейс)
-            if "wbbasket" in image_url:
-                backup_url = image_url.replace("wbbasket.ru", "wberries.ru") # Альтернативный домен
-                logger.info(f"Trying backup URL: {backup_url}")
-                response = requests.get(backup_url, headers=headers, timeout=10, stream=True)
-                if response.status_code != 200:
-                     raise HTTPException(400, "Не удалось скачать фото с серверов WB.")
-            else:
-                raise HTTPException(400, f"Ошибка скачивания: {response.status_code}")
+            # Если 404 на wbbasket, значит сервер другой. Пробуем fallback, если это WB
+            if response.status_code == 404 and "wbbasket" in image_url:
+                 raise HTTPException(400, "Не удалось найти фото на сервере WB. Попробуйте скопировать ссылку на саму картинку.")
+            raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
             
         file_bytes = response.content
         
     except Exception as e:
         logger.error(f"Download exception: {e}")
-        raise HTTPException(400, f"Ошибка соединения: {str(e)}")
+        raise HTTPException(400, f"Ошибка: {str(e)}")
 
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
@@ -168,6 +160,7 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
              raise HTTPException(400, "Ошибка: получена веб-страница вместо картинки.")
         raise HTTPException(400, error)
     
+    # Сохранение
     try:
         ext = ".jpg"
         try:
@@ -185,9 +178,9 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
         final_url = save_image(img, filename)
         
     except Exception as e:
-        logger.error(f"Save error: {e}")
         raise HTTPException(500, f"Ошибка сохранения: {e}")
     
+    # БД
     item = WardrobeItem(
         user_id=user_id,
         name=name.strip(),
@@ -230,15 +223,18 @@ async def add_item_by_manual_url(payload: ItemUrlPayload, db: Session = Depends(
 @router.post("/add-marketplace", response_model=ItemResponse)
 async def add_item_by_marketplace(payload: ItemUrlPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     loop = asyncio.get_event_loop()
+    
+    # 1. Сначала ищем ссылку (Парсинг -> Математика)
     found_image, found_title = await loop.run_in_executor(None, lambda: get_marketplace_data(payload.url))
     
     final_name = payload.name
     if not final_name and found_title: final_name = found_title[:30]
     if not final_name: final_name = "Покупка"
 
-    # Если скрапер не нашел (Ozon защита), берем исходную ссылку
     target_url = found_image if found_image else payload.url
-    
+    if not target_url: raise HTTPException(400, "Не удалось найти изображение.")
+
+    # 2. Скачиваем
     return await loop.run_in_executor(None, lambda: download_direct_url(target_url, final_name, user_id, "marketplace", db))
 
 @router.delete("/delete")
