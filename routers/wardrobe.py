@@ -1,5 +1,6 @@
 import os
 import uuid
+import time
 import asyncio
 import re
 import logging
@@ -187,85 +188,173 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
     logger.info(f"Downloading from: {image_url}")
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.wildberries.ru/',  # Важно для WB
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.9',
+        'Referer': 'https://www.wildberries.ru/',
+        'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
     }
 
     max_retries = 3
+    file_bytes = None
+    last_error = None
+
     for attempt in range(max_retries):
         try:
-            response = requests.get(image_url, headers=headers, timeout=25, stream=True)
+            logger.info(f"📥 Download attempt {attempt + 1}/{max_retries}")
+            
+            # Скачиваем файл
+            response = requests.get(
+                image_url, 
+                headers=headers, 
+                timeout=25, 
+                stream=True,
+                allow_redirects=True
+            )
+            
+            logger.info(f"📊 Response status: {response.status_code}, Content-Type: {response.headers.get('Content-Type', 'unknown')}")
             
             if response.status_code == 200:
+                # Читаем контент
+                file_bytes = response.content
+                logger.info(f"✅ Downloaded {len(file_bytes)} bytes")
                 break
-                
-            logger.warning(f"Attempt {attempt+1}/{max_retries}: status {response.status_code}")
             
+            # Специфичные ошибки WB
+            elif response.status_code in [403, 498]:
+                logger.error(f"🚫 WB blocked request: {response.status_code}")
+                
+                # Пробуем альтернативный URL (меняем .webp на .jpg)
+                if attempt < max_retries - 1 and '.webp' in image_url:
+                    image_url = image_url.replace('.webp', '.jpg')
+                    logger.info(f"🔄 Trying alternative format: {image_url}")
+                    time.sleep(1)
+                    continue
+                else:
+                    raise HTTPException(
+                        400, 
+                        "Wildberries временно заблокировал скачивание. "
+                        "Попробуйте через минуту или скопируйте прямую ссылку на фото (ПКМ → Копировать URL картинки)."
+                    )
+            
+            elif response.status_code == 404:
+                raise HTTPException(400, "Изображение не найдено на сервере")
+            
+            else:
+                logger.warning(f"⚠️ Unexpected status: {response.status_code}")
+                last_error = f"HTTP {response.status_code}"
+                
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                else:
+                    raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
+                    
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"⏱️ Timeout on attempt {attempt + 1}")
+            last_error = "Превышено время ожидания"
             if attempt < max_retries - 1:
-                time.sleep(1)  # Пауза перед повтором
-                
-        except requests.exceptions.Timeout:
-            logger.warning(f"Attempt {attempt+1}/{max_retries}: Timeout")
-            if attempt == max_retries - 1:
+                time.sleep(1)
+            else:
                 raise HTTPException(400, "Превышено время ожидания загрузки изображения")
-
-    try:
-        # Скачиваем файл
-        response = requests.get(image_url, headers=headers, timeout=20, stream=True)
-        
-        if response.status_code != 200:
-            logger.error(f"Download failed: {response.status_code}")
+                
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"🔌 Connection error: {e}")
+            last_error = "Ошибка соединения"
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            else:
+                raise HTTPException(400, f"Ошибка соединения с сервером")
+                
+        except HTTPException:
+            raise
             
-            # Специфичная ошибка WB (если ссылка протухла или защита CDN)
-            if response.status_code in [403, 498] and "wbbasket" in image_url:
-                 raise HTTPException(400, "Wildberries временно заблокировал скачивание картинки. Попробуйте вручную скопировать URL картинки.")
-                 
-            raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
-            
-        file_bytes = response.content
-        
-    except Exception as e:
-        logger.error(f"Download exception: {e}")
-        raise HTTPException(400, f"Ошибка соединения: {str(e)}")
+        except Exception as e:
+            logger.error(f"❌ Download exception on attempt {attempt + 1}: {type(e).__name__}: {e}")
+            last_error = str(e)
+            if attempt < max_retries - 1:
+                time.sleep(1)
+            else:
+                raise HTTPException(400, f"Ошибка загрузки: {last_error}")
 
-    # Валидация байтов (чтобы не сохранять HTML ошибки как картинки)
+    # Проверяем, что файл скачан
+    if not file_bytes:
+        raise HTTPException(400, f"Не удалось скачать изображение: {last_error}")
+
+    # Валидация байтов
+    logger.info(f"🔍 Validating image bytes...")
     valid, error = validate_image_bytes(file_bytes)
+    
     if not valid:
-        # Если скачали HTML (страницу с ошибкой)
-        if b"<html" in file_bytes[:500].lower():
-             raise HTTPException(400, "Получена страница сайта вместо картинки. Защита от ботов активна.")
+        # Проверка на HTML (страница ошибки вместо картинки)
+        if b"<html" in file_bytes[:500].lower() or b"<!doctype" in file_bytes[:500].lower():
+            logger.error(f"❌ Received HTML instead of image. First 200 bytes: {file_bytes[:200]}")
+            raise HTTPException(
+                400, 
+                "Получена страница сайта вместо картинки. Защита отботов активна. "
+                "Используйте прямую ссылку на фото (ПКМ по изображению → Копировать URL картинки)."
+            )
+        
+        logger.error(f"❌ Invalid image: {error}")
         raise HTTPException(400, error)
     
     # Сохранение
     try:
+        logger.info(f"💾 Saving image...")
+        
+        # Определяем расширение
         ext = ".jpg"
         try:
-            img_head = Image.open(BytesIO(file_bytes))
-            ext = f".{img_head.format.lower()}"
-        except: pass
+            img_probe = Image.open(BytesIO(file_bytes))
+            img_format = img_probe.format
+            if img_format:
+                ext = f".{img_format.lower()}"
+            img_probe.close()
+        except Exception as e:
+            logger.warning(f"Could not detect format: {e}, using .jpg")
 
         filename = f"market_{uuid.uuid4().hex}{ext}"
+        
+        # Открываем и конвертируем если нужно
         img = Image.open(BytesIO(file_bytes))
         
-        if img.mode in ("RGBA", "P"):
+        if img.mode in ("RGBA", "P", "LA"):
+            logger.info(f"🎨 Converting {img.mode} to RGB")
             img = img.convert("RGB")
             filename = filename.replace(".png", ".jpg").replace(".webp", ".jpg")
             
         final_url = save_image(img, filename)
+        logger.info(f"✅ Image saved: {final_url}")
         
     except Exception as e:
-        raise HTTPException(500, f"Ошибка сохранения: {e}")
+        logger.error(f"❌ Save error: {type(e).__name__}: {e}")
+        raise HTTPException(500, f"Ошибка сохранения изображения: {str(e)}")
     
-    # БД
-    item = WardrobeItem(
-        user_id=user_id,
-        name=name.strip(),
-        item_type=item_type,
-        image_url=final_url,
-        created_at=datetime.utcnow()
-    )
-    db.add(item); db.commit(); db.refresh(item)
-    return item
+    # Сохраняем в БД
+    try:
+        item = WardrobeItem(
+            user_id=user_id,
+            name=name.strip()[:100],  # Ограничение длины
+            item_type=item_type,
+            image_url=final_url,
+            created_at=datetime.utcnow()
+        )
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+        logger.info(f"✅ Item saved to DB: id={item.id}")
+        return item
+        
+    except Exception as e:
+        logger.error(f"❌ DB error: {type(e).__name__}: {e}")
+        # Удаляем загруженное изображение при ошибке БД
+        try:
+            delete_image(final_url)
+        except:
+            pass
+        raise HTTPException(500, f"Ошибка сохранения в базу данных: {str(e)}")
 
 # --- Routes ---
 
@@ -329,4 +418,5 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
