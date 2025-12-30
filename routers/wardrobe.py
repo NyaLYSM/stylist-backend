@@ -60,56 +60,58 @@ def find_wb_image_url(nm_id: int) -> str:
     """
     Метод 'Перебора': Ищет, на каком из серверов WB лежит картинка.
     Проверяет basket-01 ... basket-25.
+    Это обходит ошибку 498, так как мы не трогаем основной сайт.
     """
     vol = nm_id // 100000
     part = nm_id // 1000
     
-    # Список возможных серверов. WB постоянно добавляет новые.
-    # Мы начинаем с тех, которые вероятнее всего (по старой математике),
-    # но проверяем все, если нужно.
-    hosts = [
-        f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26) 
-    ]
+    # Расширенный список серверов (актуален на 2025)
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26)]
     
-    # Заголовки как у браузера
+    # Заголовки (минимальные, чтобы CDN не ругался)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
+
+    logger.info(f"🔍 Searching WB image for ID {nm_id} on {len(hosts)} servers...")
 
     # Быстрая проверка заголовков (HEAD запрос)
     for host in hosts:
         url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
         try:
             # timeout=0.5 - очень быстро проверяем, есть ли файл
-            resp = requests.head(url, headers=headers, timeout=0.7)
+            resp = requests.head(url, headers=headers, timeout=0.5)
             if resp.status_code == 200:
-                logger.info(f"✅ WB Image found at: {host}")
+                logger.info(f"✅ Image FOUND at: {host}")
                 return url
         except:
             continue
             
+    logger.warning(f"❌ Image not found on any WB server for ID {nm_id}")
     return None
 
 def get_marketplace_data(url: str):
     image_url = None
     title = None
     
-    # 1. WILDBERRIES (Спец. логика через перебор серверов)
+    # 1. WILDBERRIES (Спец. логика: Игнорируем сайт, ищем сразу на CDN)
     if "wildberries" in url or "wb.ru" in url:
         try:
+            # Ищем ID товара в ссылке
             match = re.search(r'catalog/(\d+)', url)
             if match:
                 nm_id = int(match.group(1))
-                # Ищем реальную ссылку через перебор
+                # Запускаем перебор серверов
                 image_url = find_wb_image_url(nm_id)
                 title = "Wildberries Item"
                 if image_url:
                     return image_url, title
         except Exception as e:
-            logger.error(f"WB Search failed: {e}")
+            logger.error(f"WB Search logic failed: {e}")
 
-    # 2. ОСТАЛЬНЫЕ (Ozon, Lamoda - честный парсинг)
+    # 2. ОСТАЛЬНЫЕ (Ozon, Lamoda - честный парсинг через curl_cffi)
     try:
+        # impersonate="chrome120" — притворяемся браузером
         response = crequests.get(url, impersonate="chrome120", timeout=12, allow_redirects=True)
         
         if response.status_code == 200:
@@ -139,11 +141,16 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
     }
 
     try:
-        # Увеличенный таймаут для скачивания
+        # Скачиваем файл
         response = requests.get(image_url, headers=headers, timeout=20, stream=True)
         
         if response.status_code != 200:
             logger.error(f"Download failed: {response.status_code}")
+            
+            # Специфичная ошибка WB (если ссылка протухла или защита CDN)
+            if response.status_code in [403, 498] and "wbbasket" in image_url:
+                 raise HTTPException(400, "Wildberries временно заблокировал скачивание картинки. Попробуйте вручную скопировать URL картинки.")
+                 
             raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
             
         file_bytes = response.content
@@ -152,10 +159,12 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
         logger.error(f"Download exception: {e}")
         raise HTTPException(400, f"Ошибка соединения: {str(e)}")
 
+    # Валидация байтов (чтобы не сохранять HTML ошибки как картинки)
     valid, error = validate_image_bytes(file_bytes)
     if not valid:
+        # Если скачали HTML (страницу с ошибкой)
         if b"<html" in file_bytes[:500].lower():
-             raise HTTPException(400, "Ошибка: получена веб-страница вместо картинки.")
+             raise HTTPException(400, "Получена страница сайта вместо картинки. Защита от ботов активна.")
         raise HTTPException(400, error)
     
     # Сохранение
@@ -222,18 +231,20 @@ async def add_item_by_manual_url(payload: ItemUrlPayload, db: Session = Depends(
 async def add_item_by_marketplace(payload: ItemUrlPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     loop = asyncio.get_event_loop()
     
-    # 1. Поиск ссылки
+    # 1. Поиск ссылки (При WB запускается перебор серверов)
     found_image, found_title = await loop.run_in_executor(None, lambda: get_marketplace_data(payload.url))
     
     final_name = payload.name
     if not final_name and found_title: final_name = found_title[:30]
     if not final_name: final_name = "Покупка"
 
-    # Если скрапер не нашел (Ozon защита), берем исходную ссылку
+    # Если мы не нашли картинку, но ссылка похожа на маркетплейс — падаем с ошибкой,
+    # чтобы не пытаться качать HTML страницу товара (что и вызывало 400/498)
+    if not found_image and ("wildberries" in payload.url or "ozon" in payload.url):
+        raise HTTPException(400, "Не удалось получить доступ к картинке. Сайт защищен от ботов. Пожалуйста, используйте прямую ссылку на фото (ПКМ -> Копировать URL картинки).")
+
+    # Если скрапер не нашел, но это НЕ маркетплейс (просто ссылка на фото), пробуем качать
     target_url = found_image if found_image else payload.url
-    
-    if not target_url:
-         raise HTTPException(400, "Не удалось найти изображение (защита сайта). Используйте прямую ссылку.")
 
     # 2. Скачивание
     return await loop.run_in_executor(None, lambda: download_direct_url(target_url, final_name, user_id, "marketplace", db))
