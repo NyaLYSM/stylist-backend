@@ -205,7 +205,6 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
         try:
             logger.info(f"📥 Download attempt {attempt + 1}/{max_retries}")
             
-            # Скачиваем файл
             response = requests.get(
                 image_url, 
                 headers=headers, 
@@ -217,16 +216,13 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
             logger.info(f"📊 Response status: {response.status_code}, Content-Type: {response.headers.get('Content-Type', 'unknown')}")
             
             if response.status_code == 200:
-                # Читаем контент
                 file_bytes = response.content
                 logger.info(f"✅ Downloaded {len(file_bytes)} bytes")
                 break
             
-            # Специфичные ошибки WB
             elif response.status_code in [403, 498]:
                 logger.error(f"🚫 WB blocked request: {response.status_code}")
                 
-                # Пробуем альтернативный URL (меняем .webp на .jpg)
                 if attempt < max_retries - 1 and '.webp' in image_url:
                     image_url = image_url.replace('.webp', '.jpg')
                     logger.info(f"🔄 Trying alternative format: {image_url}")
@@ -252,7 +248,7 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
                 else:
                     raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
                     
-        except requests.exceptions.Timeout as e:
+        except requests.exceptions.Timeout:
             logger.warning(f"⏱️ Timeout on attempt {attempt + 1}")
             last_error = "Превышено время ожидания"
             if attempt < max_retries - 1:
@@ -266,7 +262,7 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
             if attempt < max_retries - 1:
                 time.sleep(2)
             else:
-                raise HTTPException(400, f"Ошибка соединения с сервером")
+                raise HTTPException(400, "Ошибка соединения с сервером")
                 
         except HTTPException:
             raise
@@ -279,7 +275,6 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
             else:
                 raise HTTPException(400, f"Ошибка загрузки: {last_error}")
 
-    # Проверяем, что файл скачан
     if not file_bytes:
         raise HTTPException(400, f"Не удалось скачать изображение: {last_error}")
 
@@ -288,9 +283,8 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
     valid, error = validate_image_bytes(file_bytes)
     
     if not valid:
-        # Проверка на HTML (страница ошибки вместо картинки)
         if b"<html" in file_bytes[:500].lower() or b"<!doctype" in file_bytes[:500].lower():
-            logger.error(f"❌ Received HTML instead of image. First 200 bytes: {file_bytes[:200]}")
+            logger.error(f"❌ Received HTML instead of image")
             raise HTTPException(
                 400, 
                 "Получена страница сайта вместо картинки. Защита отботов активна. "
@@ -300,33 +294,65 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
         logger.error(f"❌ Invalid image: {error}")
         raise HTTPException(400, error)
     
-    # Сохранение
+    # Обработка и сохранение изображения
     try:
-        logger.info(f"💾 Saving image...")
+        logger.info(f"💾 Processing and saving image...")
         
-        # Определяем расширение
-        ext = ".jpg"
-        try:
-            img_probe = Image.open(BytesIO(file_bytes))
-            img_format = img_probe.format
-            if img_format:
-                ext = f".{img_format.lower()}"
-            img_probe.close()
-        except Exception as e:
-            logger.warning(f"Could not detect format: {e}, using .jpg")
-
-        filename = f"market_{uuid.uuid4().hex}{ext}"
-        
-        # Открываем и конвертируем если нужно
+        # Открываем изображение для проверки и конвертации
         img = Image.open(BytesIO(file_bytes))
+        img_format = img.format or "JPEG"
         
-        if img.mode in ("RGBA", "P", "LA"):
+        logger.info(f"📷 Original format: {img_format}, mode: {img.mode}, size: {img.size}")
+        
+        # Определяем нужна ли конвертация
+        need_conversion = img.mode in ("RGBA", "P", "LA", "L")
+        
+        if need_conversion:
             logger.info(f"🎨 Converting {img.mode} to RGB")
-            img = img.convert("RGB")
-            filename = filename.replace(".png", ".jpg").replace(".webp", ".jpg")
             
-        final_url = save_image(img, filename)
-        logger.info(f"✅ Image saved: {final_url}")
+            # Создаём RGB изображение с белым фоном
+            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+            
+            # Накладываем исходное изображение
+            if img.mode in ("RGBA", "LA"):
+                # Используем альфа-канал как маску
+                rgb_img.paste(img, mask=img.split()[-1])
+            else:
+                rgb_img.paste(img)
+            
+            img = rgb_img
+            
+            # Конвертируем в JPEG bytes
+            output = BytesIO()
+            img.save(output, format='JPEG', quality=85, optimize=True)
+            final_bytes = output.getvalue()
+            filename = f"market_{uuid.uuid4().hex}.jpg"
+            
+            logger.info(f"✅ Converted to JPEG, new size: {len(final_bytes)} bytes")
+        else:
+            # Если конвертация не нужна, используем оригинальные байты
+            final_bytes = file_bytes
+            
+            # Определяем расширение
+            ext = ".jpg"
+            if img_format.upper() in ['JPEG', 'JPG']:
+                ext = ".jpg"
+            elif img_format.upper() == 'PNG':
+                ext = ".png"
+            elif img_format.upper() == 'WEBP':
+                ext = ".webp"
+            elif img_format.upper() == 'GIF':
+                ext = ".gif"
+            
+            filename = f"market_{uuid.uuid4().hex}{ext}"
+            logger.info(f"✅ Using original format: {ext}")
+        
+        # Закрываем PIL объект
+        img.close()
+        
+        # Сохраняем через вашу функцию (она ожидает filename и bytes)
+        final_url = save_image(filename, final_bytes)
+        logger.info(f"✅ Image saved successfully: {final_url}")
         
     except Exception as e:
         logger.error(f"❌ Save error: {type(e).__name__}: {e}")
@@ -336,7 +362,7 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
     try:
         item = WardrobeItem(
             user_id=user_id,
-            name=name.strip()[:100],  # Ограничение длины
+            name=name.strip()[:100],
             item_type=item_type,
             image_url=final_url,
             created_at=datetime.utcnow()
@@ -418,5 +444,6 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
