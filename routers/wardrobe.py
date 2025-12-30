@@ -58,34 +58,84 @@ def validate_image_bytes(file_bytes: bytes):
 
 def find_wb_image_url(nm_id: int) -> str:
     """
-    Метод 'Перебора': Ищет, на каком из серверов WB лежит картинка.
-    Проверяет basket-01 ... basket-25.
-    Это обходит ошибку 498, так как мы не трогаем основной сайт.
+    Улучшенный метод поиска изображений WB с расширенной диагностикой
     """
     vol = nm_id // 100000
     part = nm_id // 1000
     
-    # Расширенный список серверов (актуален на 2025)
+    # Расширенный список серверов (актуализировано на 2025)
     hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26)]
     
-    # Заголовки (минимальные, чтобы CDN не ругался)
+    # Добавляем альтернативные домены
+    hosts.extend([
+        f"basket-{i:02d}.wb.ru" for i in range(1, 13)
+    ])
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
     }
 
-    logger.info(f"🔍 Searching WB image for ID {nm_id} on {len(hosts)} servers...")
+    logger.info(f"🔍 Searching WB image for ID {nm_id} (vol={vol}, part={part}) on {len(hosts)} servers...")
 
-    # Быстрая проверка заголовков (HEAD запрос)
-    for host in hosts:
-        url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
-        try:
-            # timeout=0.5 - очень быстро проверяем, есть ли файл
-            resp = requests.head(url, headers=headers, timeout=0.5)
-            if resp.status_code == 200:
-                logger.info(f"✅ Image FOUND at: {host}")
-                return url
-        except:
-            continue
+    # Пробуем разные варианты URL
+    url_templates = [
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg",
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp",
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/c516x688/1.jpg",
+    ]
+
+    for template in url_templates:
+        for host in hosts:
+            url = template.format(host=host, vol=vol, part=part, nm_id=nm_id)
+            try:
+                # Увеличенный timeout для Render.com (2 сек вместо 0.5)
+                resp = requests.head(url, headers=headers, timeout=2, allow_redirects=True)
+                
+                if resp.status_code == 200:
+                    logger.info(f"✅ Image FOUND at: {host} (template: {template.split('/')[-3]})")
+                    return url
+                    
+                # Логируем важные ошибки
+                if resp.status_code in [403, 429, 498]:
+                    logger.debug(f"⚠️ {host}: HTTP {resp.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                logger.debug(f"⏱️ Timeout for {host}")
+                continue
+            except requests.exceptions.ConnectionError:
+                logger.debug(f"🔌 Connection error for {host}")
+                continue
+            except Exception as e:
+                logger.debug(f"❗ Error for {host}: {type(e).__name__}")
+                continue
+    
+    # Если не нашли - пробуем через API WB (запасной вариант)
+    try:
+        logger.info(f"🔄 Trying WB API as fallback...")
+        api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+        
+        resp = requests.get(api_url, headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('data', {}).get('products'):
+                product = data['data']['products'][0]
+                if product.get('images'):
+                    # Получаем первое изображение
+                    img_data = product['images'][0]
+                    if isinstance(img_data, dict) and 'big' in img_data:
+                        api_image_url = img_data['big']
+                    elif isinstance(img_data, str):
+                        api_image_url = f"https://basket-01.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/{img_data}.jpg"
+                    else:
+                        api_image_url = None
+                    
+                    if api_image_url:
+                        logger.info(f"✅ Found via API: {api_image_url}")
+                        return api_image_url
+    except Exception as e:
+        logger.warning(f"API fallback failed: {e}")
             
     logger.warning(f"❌ Image not found on any WB server for ID {nm_id}")
     return None
@@ -137,8 +187,27 @@ def download_direct_url(image_url: str, name: str, user_id: int, item_type: str,
     logger.info(f"Downloading from: {image_url}")
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.wildberries.ru/',  # Важно для WB
     }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(image_url, headers=headers, timeout=25, stream=True)
+            
+            if response.status_code == 200:
+                break
+                
+            logger.warning(f"Attempt {attempt+1}/{max_retries}: status {response.status_code}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(1)  # Пауза перед повтором
+                
+        except requests.exceptions.Timeout:
+            logger.warning(f"Attempt {attempt+1}/{max_retries}: Timeout")
+            if attempt == max_retries - 1:
+                raise HTTPException(400, "Превышено время ожидания загрузки изображения")
 
     try:
         # Скачиваем файл
@@ -231,22 +300,25 @@ async def add_item_by_manual_url(payload: ItemUrlPayload, db: Session = Depends(
 async def add_item_by_marketplace(payload: ItemUrlPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     loop = asyncio.get_event_loop()
     
-    # 1. Поиск ссылки (При WB запускается перебор серверов)
     found_image, found_title = await loop.run_in_executor(None, lambda: get_marketplace_data(payload.url))
     
-    final_name = payload.name
-    if not final_name and found_title: final_name = found_title[:30]
-    if not final_name: final_name = "Покупка"
+    final_name = payload.name or found_title[:30] if found_title else "Покупка"
 
-    # Если мы не нашли картинку, но ссылка похожа на маркетплейс — падаем с ошибкой,
-    # чтобы не пытаться качать HTML страницу товара (что и вызывало 400/498)
-    if not found_image and ("wildberries" in payload.url or "ozon" in payload.url):
-        raise HTTPException(400, "Не удалось получить доступ к картинке. Сайт защищен от ботов. Пожалуйста, используйте прямую ссылку на фото (ПКМ -> Копировать URL картинки).")
-
-    # Если скрапер не нашел, но это НЕ маркетплейс (просто ссылка на фото), пробуем качать
+    # Более понятное сообщение об ошибке
+    if not found_image:
+        if "wildberries" in payload.url or "wb.ru" in payload.url:
+            raise HTTPException(
+                400, 
+                "Не удалось найти изображение товара на Wildberries. "
+                "Попробуйте: 1) Обновить страницу товара 2) Скопировать прямую ссылку на фото (ПКМ по фото → Копировать URL картинки)"
+            )
+        elif "ozon" in payload.url:
+            raise HTTPException(400, "Не удалось получить доступ к изображению Ozon")
+        else:
+            # Для других сайтов пробуем качать напрямую
+            pass
+    
     target_url = found_image if found_image else payload.url
-
-    # 2. Скачивание
     return await loop.run_in_executor(None, lambda: download_direct_url(target_url, final_name, user_id, "marketplace", db))
 
 @router.delete("/delete")
@@ -257,3 +329,4 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
