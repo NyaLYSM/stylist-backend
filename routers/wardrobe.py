@@ -24,8 +24,11 @@ from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 from .dependencies import get_current_user_id
 
-# === БЕЗОПАСНЫЙ ИМПОРТ НОВЫХ МОДУЛЕЙ ===
-# Проверяем наличие модулей перед импортом
+# === ИНИЦИАЛИЗАЦИЯ LOGGER СНАЧАЛА ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# === ТЕПЕРЬ БЕЗОПАСНЫЙ ИМПОРТ НОВЫХ МОДУЛЕЙ ===
 CLIP_AVAILABLE = False
 IMAGE_PROCESSOR_AVAILABLE = False
 
@@ -35,7 +38,7 @@ try:
     logger.info("✅ CLIP client module loaded")
 except ImportError as e:
     logger.warning(f"⚠️ CLIP client not available: {e}")
-    # Заглушки для функций
+    # Заглушки
     def clip_generate_name(image_url: str) -> dict:
         return {"success": False, "name": "Покупка"}
     def check_clip_service() -> bool:
@@ -47,7 +50,7 @@ try:
     logger.info("✅ Image processor module loaded")
 except ImportError as e:
     logger.warning(f"⚠️ Image processor not available: {e}")
-    # Заглушки для функций
+    # Заглушки
     def generate_image_variants(img, output_size=800):
         return {"original": img}
     def convert_variant_to_bytes(img, format="JPEG", quality=85):
@@ -61,9 +64,6 @@ except ImportError as e:
             img = rgb_img
         img.save(output, format=format, quality=quality, optimize=True)
         return output.getvalue()
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Wardrobe"])
 
@@ -713,4 +713,5 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}, variant={selected_variant}")
     
     return item
+
 
