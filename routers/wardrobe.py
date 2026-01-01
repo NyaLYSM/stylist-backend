@@ -23,6 +23,8 @@ from models import WardrobeItem
 from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 from .dependencies import get_current_user_id
+from utils.clip_client import clip_generate_name, check_clip_service
+from utils.image_processor import generate_image_variants, convert_variant_to_bytes
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,6 +45,12 @@ class ItemResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class SelectVariantPayload(BaseModel):
+    temp_id: str
+    selected_variant: str
+    name: str
+
+VARIANTS_STORAGE = {}
 # --- Helpers ---
 def validate_image_bytes(file_bytes: bytes):
     MAX_SIZE_MB = 10
@@ -445,5 +453,213 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     db.delete(item); db.commit()
     return {"status": "success"}
 
+def download_image_bytes(image_url: str) -> bytes:
+    """Вспомогательная функция для скачивания bytes"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.wildberries.ru/',
+    }
+    
+    response = requests.get(image_url, headers=headers, timeout=25, allow_redirects=True)
+    
+    if response.status_code != 200:
+        raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
+    
+    return response.content
 
+def cleanup_old_variants():
+    """Удаляет варианты старше 10 минут"""
+    from datetime import timedelta
+    
+    now = datetime.utcnow()
+    to_delete = []
+    
+    for temp_id, data in VARIANTS_STORAGE.items():
+        age = now - data["created_at"]
+        if age > timedelta(minutes=10):
+            to_delete.append(temp_id)
+            # Удаляем превью
+            for preview_url in data.get("previews", {}).values():
+                try:
+                    delete_image(preview_url)
+                except:
+                    pass
+    
+    for temp_id in to_delete:
+        del VARIANTS_STORAGE[temp_id]
+        logger.info(f"🗑️ Cleaned up old variants: {temp_id}")
 
+@router.post("/add-marketplace-with-variants")
+async def add_marketplace_with_variants(
+    payload: ItemUrlPayload, 
+    db: Session = Depends(get_db), 
+    user_id: int = Depends(get_current_user_id)
+):
+    """
+    Шаг 1: Скачивает изображение, генерирует 4 варианта и предлагает название
+    Возвращает временный ID и превью вариантов
+    """
+    loop = asyncio.get_event_loop()
+    
+    # 1. Поиск изображения на маркетплейсе
+    logger.info(f"🔍 Searching marketplace image...")
+    found_image, found_title = await loop.run_in_executor(
+        None, 
+        lambda: get_marketplace_data(payload.url)
+    )
+    
+    if not found_image and ("wildberries" in payload.url or "ozon" in payload.url):
+        raise HTTPException(
+            400, 
+            "Не удалось получить доступ к картинке. "
+            "Используйте прямую ссылку на фото (ПКМ → Копировать URL картинки)."
+        )
+    
+    target_url = found_image if found_image else payload.url
+    
+    # 2. Скачиваем изображение
+    logger.info(f"📥 Downloading image from: {target_url}")
+    try:
+        file_bytes = await loop.run_in_executor(
+            None,
+            lambda: download_image_bytes(target_url)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Ошибка загрузки: {str(e)}")
+    
+    # Валидация
+    valid, error = validate_image_bytes(file_bytes)
+    if not valid:
+        raise HTTPException(400, error)
+    
+    # 3. Генерируем 4 варианта обработки
+    logger.info(f"🎨 Generating image variants...")
+    img = Image.open(BytesIO(file_bytes))
+    variants = generate_image_variants(img, output_size=800)
+    
+    # 4. Генерируем умное название через CLIP (если доступен)
+    suggested_name = payload.name if payload.name else "Покупка"
+    
+    if check_clip_service():
+        logger.info(f"🤖 Generating smart name with CLIP...")
+        # Сначала сохраняем временное изображение для CLIP
+        temp_filename = f"temp_{uuid.uuid4().hex}.jpg"
+        temp_bytes = convert_variant_to_bytes(variants["original"])
+        temp_url = save_image(temp_filename, temp_bytes)
+        
+        try:
+            # Получаем публичный URL
+            full_url = temp_url
+            if not temp_url.startswith('http'):
+                base_url = os.getenv("BASE_URL", "http://localhost:8000")
+                full_url = f"{base_url}{temp_url}"
+            
+            name_result = clip_generate_name(full_url)
+            if name_result.get("success"):
+                suggested_name = name_result["name"]
+                logger.info(f"✅ CLIP suggested name: {suggested_name}")
+            
+            # Удаляем временный файл
+            delete_image(temp_url)
+        except Exception as e:
+            logger.warning(f"⚠️ CLIP naming failed: {e}")
+    else:
+        logger.info("⚠️ CLIP service not available, using default name")
+    
+    # 5. Конвертируем варианты в bytes и создаём превью
+    temp_id = uuid.uuid4().hex
+    variant_previews = {}
+    variant_full = {}
+    
+    for variant_name, variant_img in variants.items():
+        # Полноразмерная версия
+        full_bytes = convert_variant_to_bytes(variant_img, quality=85)
+        variant_full[variant_name] = full_bytes
+        
+        # Превью (300x300)
+        preview_img = variant_img.copy()
+        preview_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+        preview_bytes = convert_variant_to_bytes(preview_img, quality=70)
+        
+        # Сохраняем превью временно
+        preview_filename = f"preview_{temp_id}_{variant_name}.jpg"
+        preview_url = save_image(preview_filename, preview_bytes)
+        variant_previews[variant_name] = preview_url
+    
+    # 6. Сохраняем в временное хранилище
+    VARIANTS_STORAGE[temp_id] = {
+        "variants": variant_full,
+        "user_id": user_id,
+        "created_at": datetime.utcnow(),
+        "url": payload.url,
+        "previews": variant_previews
+    }
+    
+    # Очистка старых вариантов
+    cleanup_old_variants()
+    
+    return {
+        "temp_id": temp_id,
+        "suggested_name": suggested_name,
+        "variants": variant_previews,
+        "message": "Выберите лучший вариант изображения"
+    }
+
+@router.post("/select-variant", response_model=ItemResponse)
+async def select_and_save_variant(
+    payload: SelectVariantPayload,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id)
+):
+    """
+    Шаг 2: Пользователь выбирает вариант, сохраняем в БД
+    """
+    # Проверяем наличие вариантов
+    if payload.temp_id not in VARIANTS_STORAGE:
+        raise HTTPException(404, "Варианты не найдены или истекло время")
+    
+    stored = VARIANTS_STORAGE[payload.temp_id]
+    
+    # Проверяем владельца
+    if stored["user_id"] != user_id:
+        raise HTTPException(403, "Нет доступа к этим вариантам")
+    
+    # Получаем выбранный вариант
+    selected_variant = payload.selected_variant
+    if selected_variant not in stored["variants"]:
+        raise HTTPException(400, f"Неизвестный вариант: {selected_variant}")
+    
+    logger.info(f"💾 Saving selected variant: {selected_variant}")
+    
+    # Сохраняем выбранное изображение
+    final_bytes = stored["variants"][selected_variant]
+    final_filename = f"wardrobe_{uuid.uuid4().hex}.jpg"
+    final_url = save_image(final_filename, final_bytes)
+    
+    # Удаляем превью
+    for preview_url in stored["previews"].values():
+        try:
+            delete_image(preview_url)
+        except:
+            pass
+    
+    # Удаляем из временного хранилища
+    del VARIANTS_STORAGE[payload.temp_id]
+    
+    # Сохраняем в БД
+    item = WardrobeItem(
+        user_id=user_id,
+        name=payload.name.strip()[:100],
+        item_type="marketplace",
+        image_url=final_url,
+        created_at=datetime.utcnow()
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    
+    logger.info(f"✅ Item saved: id={item.id}, variant={selected_variant}")
+    
+    return item
