@@ -186,47 +186,177 @@ def find_wb_image_url(nm_id: int) -> str:
     return None
 
 def get_marketplace_data(url: str):
-    image_url = None
+    """
+    Возвращает: (список URL картинок, название товара)
+    Для WB - получаем все фото с карточки через API
+    """
+    image_urls = []
     title = None
     
-    # 1. WILDBERRIES (Спец. логика: Игнорируем сайт, ищем сразу на CDN)
+    # 1. WILDBERRIES - получаем ВСЕ фото через API
     if "wildberries" in url or "wb.ru" in url:
         try:
-            # Ищем ID товара в ссылке
             match = re.search(r'catalog/(\d+)', url)
             if match:
                 nm_id = int(match.group(1))
-                # Запускаем перебор серверов
-                image_url = find_wb_image_url(nm_id)
-                title = "Wildberries Item"
-                if image_url:
-                    return image_url, title
+                
+                # Запрос к API WB для получения всех данных товара
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                
+                logger.info(f"🔍 Fetching WB product data for ID {nm_id}...")
+                response = requests.get(api_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if data.get('data', {}).get('products'):
+                        product = data['data']['products'][0]
+                        
+                        # Получаем название
+                        title = product.get('name', 'Товар Wildberries')
+                        
+                        # Получаем все изображения
+                        vol = nm_id // 100000
+                        part = nm_id // 1000
+                        
+                        # WB хранит изображения в формате: 1.jpg, 2.jpg, ..., 10.jpg и т.д.
+                        # Пробуем получить до 10 изображений
+                        for img_num in range(1, 11):
+                            # Пробуем найти на серверах
+                            img_url = find_wb_single_image(nm_id, vol, part, img_num)
+                            if img_url:
+                                image_urls.append(img_url)
+                        
+                        logger.info(f"✅ Found {len(image_urls)} images for WB product")
+                        
+                        if image_urls:
+                            return image_urls, title
+                        
         except Exception as e:
-            logger.error(f"WB Search logic failed: {e}")
+            logger.error(f"WB API logic failed: {e}")
 
-    # 2. ОСТАЛЬНЫЕ (Ozon, Lamoda - честный парсинг через curl_cffi)
+    # 2. ОСТАЛЬНЫЕ маркетплейсы (Ozon, Lamoda) - парсим через curl_cffi
     try:
-        # impersonate="chrome120" — притворяемся браузером
         response = crequests.get(url, impersonate="chrome120", timeout=12, allow_redirects=True)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "lxml")
             
-            og_image = soup.find("meta", property="og:image")
-            if og_image: 
-                image_url = og_image.get("content")
-                logger.info(f"Found og:image: {image_url}")
-
+            # Название
             og_title = soup.find("meta", property="og:title")
-            if og_title: title = og_title.get("content")
-            elif soup.title: title = soup.title.string
+            if og_title: 
+                title = og_title.get("content")
+            elif soup.title: 
+                title = soup.title.string
             
-            if title: title = title.split('|')[0].strip()
+            if title: 
+                title = title.split('|')[0].strip()
+            
+            # Основное изображение
+            og_image = soup.find("meta", property="og:image")
+            if og_image:
+                image_urls.append(og_image.get("content"))
+            
+            # Дополнительные изображения (для Ozon/Lamoda)
+            # Ищем все теги img с большими размерами
+            for img_tag in soup.find_all('img'):
+                src = img_tag.get('src') or img_tag.get('data-src')
+                if src and any(x in src for x in ['large', 'big', 'original', 'zoom']):
+                    if src not in image_urls:
+                        image_urls.append(src)
+                        if len(image_urls) >= 10:
+                            break
+            
+            logger.info(f"✅ Found {len(image_urls)} images via scraping")
 
     except Exception as e:
         logger.warning(f"Scraper error: {e}")
     
-    return image_url, title
+    return image_urls, title
+
+def find_wb_single_image(nm_id: int, vol: int, part: int, img_num: int) -> str:
+    """
+    Ищет конкретное изображение WB по номеру (1, 2, 3, ...)
+    Возвращает URL если найдено, иначе None
+    """
+    # Список серверов
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 13)]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    # Пробуем разные форматы
+    templates = [
+        f"https://{{host}}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg",
+        f"https://{{host}}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp",
+    ]
+    
+    for template in templates:
+        for host in hosts:
+            url = template.format(host=host)
+            try:
+                resp = requests.head(url, headers=headers, timeout=1)
+                if resp.status_code == 200:
+                    return url
+            except:
+                continue
+    
+    return None
+
+def extract_smart_title(full_title: str) -> str:
+    """
+    Извлекает ключевые слова из названия товара
+    Пример: "Брюки женские палаццо широкие летние 2024" -> "Брюки палаццо"
+    """
+    if not full_title:
+        return "Покупка"
+    
+    # Убираем лишнее
+    title = full_title.lower()
+    
+    # Убираем размеры
+    title = re.sub(r'\b\d+[-/]\d+\b', '', title)  # 42-44, 42/44
+    title = re.sub(r'\b[xsmlXSML]{1,3}\b', '', title)  # S, M, L, XL, XXL
+    
+    # Убираем годы и сезоны
+    title = re.sub(r'\b20\d{2}\b', '', title)  # 2024, 2025
+    title = re.sub(r'\b(весна|лето|осень|зима|сезон)\b', '', title)
+    
+    # Убираем стоп-слова
+    stop_words = [
+        'женские', 'мужские', 'детские', 'для', 'новые', 'модные',
+        'стильные', 'красивые', 'качественные', 'купить', 'цена',
+        'интернет', 'магазин', 'доставка', 'скидка', 'распродажа'
+    ]
+    
+    for word in stop_words:
+        title = re.sub(rf'\b{word}\b', '', title)
+    
+    # Чистим пробелы
+    title = ' '.join(title.split())
+    
+    # Берем первые 2-3 значимых слова
+    words = title.split()
+    
+    # Фильтруем короткие слова (предлоги)
+    meaningful_words = [w for w in words if len(w) > 2]
+    
+    # Берём первые 2-3 слова
+    result_words = meaningful_words[:3] if len(meaningful_words) >= 3 else meaningful_words[:2]
+    
+    result = ' '.join(result_words).capitalize()
+    
+    # Если получилось слишком коротко
+    if len(result) < 3:
+        # Берём первые 30 символов оригинала
+        result = full_title[:30].strip()
+    
+    return result if result else "Покупка"
 
 def download_direct_url(image_url: str, name: str, user_id: int, item_type: str, db: Session):
     logger.info(f"Downloading from: {image_url}")
@@ -532,130 +662,117 @@ async def add_marketplace_with_variants(
     user_id: int = Depends(get_current_user_id)
 ):
     """
-    Шаг 1: Скачивает изображение, генерирует 4 варианта и предлагает название
-    Возвращает временный ID и превью вариантов
-    
-    ВАЖНО: Если модули недоступны, падает с fallback на старый метод
+    Получает ВСЕ фотографии товара с маркетплейса
+    Возвращает превью для выбора лучшего варианта
     """
-    
-    # Проверяем доступность необходимых модулей
-    if not IMAGE_PROCESSOR_AVAILABLE:
-        logger.error("❌ Image processor not available, cannot generate variants")
-        raise HTTPException(
-            503, 
-            "Сервис генерации вариантов временно недоступен. "
-            "Используйте стандартное добавление через /add-marketplace"
-        )
-    
     loop = asyncio.get_event_loop()
     
-    try:
-        # 1. Поиск изображения на маркетплейсе
-        logger.info(f"🔍 Searching marketplace image...")
-        found_image, found_title = await loop.run_in_executor(
-            None, 
-            lambda: get_marketplace_data(payload.url)
+    # 1. Получаем все изображения и название
+    logger.info(f"🔍 Fetching marketplace images...")
+    image_urls, full_title = await loop.run_in_executor(
+        None, 
+        lambda: get_marketplace_data(payload.url)
+    )
+    
+    if not image_urls:
+        raise HTTPException(
+            400, 
+            "Не удалось найти изображения товара. "
+            "Попробуйте скопировать прямую ссылку на фото."
         )
+    
+    logger.info(f"✅ Found {len(image_urls)} images")
+    
+    # 2. Умное извлечение названия
+    if payload.name:
+        suggested_name = payload.name
+    elif full_title:
+        suggested_name = extract_smart_title(full_title)
+        logger.info(f"💡 Smart title extracted: '{suggested_name}' from '{full_title}'")
+    else:
+        suggested_name = "Покупка"
+    
+    # 3. Скачиваем и создаём превью для каждого изображения
+    temp_id = uuid.uuid4().hex
+    variant_previews = {}
+    variant_full_urls = {}  # Храним оригинальные URL
+    
+    # Ограничиваем до 10 изображений
+    image_urls = image_urls[:10]
+    
+    for idx, img_url in enumerate(image_urls):
+        variant_key = f"variant_{idx + 1}"
         
-        if not found_image and ("wildberries" in payload.url or "ozon" in payload.url):
-            raise HTTPException(
-                400, 
-                "Не удалось получить доступ к картинке. "
-                "Используйте прямую ссылку на фото (ПКМ → Копировать URL картинки)."
+        try:
+            # Скачиваем изображение
+            file_bytes = await loop.run_in_executor(
+                None,
+                lambda url=img_url: download_image_bytes(url)
             )
-        
-        target_url = found_image if found_image else payload.url
-        
-        # 2. Скачиваем изображение
-        logger.info(f"📥 Downloading image from: {target_url}")
-        file_bytes = await loop.run_in_executor(
-            None,
-            lambda: download_image_bytes(target_url)
-        )
-        
-        # Валидация
-        valid, error = validate_image_bytes(file_bytes)
-        if not valid:
-            raise HTTPException(400, error)
-        
-        # 3. Генерируем 4 варианта обработки
-        logger.info(f"🎨 Generating image variants...")
-        img = Image.open(BytesIO(file_bytes))
-        variants = generate_image_variants(img, output_size=800)
-        
-        # 4. Генерируем умное название через CLIP (если доступен)
-        suggested_name = payload.name if payload.name else "Покупка"
-        
-        if CLIP_AVAILABLE and check_clip_service():
-            logger.info(f"🤖 Generating smart name with CLIP...")
-            try:
-                # Сначала сохраняем временное изображение для CLIP
-                temp_filename = f"temp_{uuid.uuid4().hex}.jpg"
-                temp_bytes = convert_variant_to_bytes(variants["original"])
-                temp_url = save_image(temp_filename, temp_bytes)
-                
-                # Получаем публичный URL
-                full_url = temp_url
-                if not temp_url.startswith('http'):
-                    base_url = os.getenv("BASE_URL", "http://localhost:8000")
-                    full_url = f"{base_url}{temp_url}"
-                
-                name_result = clip_generate_name(full_url)
-                if name_result.get("success"):
-                    suggested_name = name_result["name"]
-                    logger.info(f"✅ CLIP suggested name: {suggested_name}")
-                
-                # Удаляем временный файл
-                delete_image(temp_url)
-            except Exception as e:
-                logger.warning(f"⚠️ CLIP naming failed: {e}")
-        else:
-            logger.info("⚠️ CLIP service not available, using default name")
-        
-        # 5. Конвертируем варианты в bytes и создаём превью
-        temp_id = uuid.uuid4().hex
-        variant_previews = {}
-        variant_full = {}
-        
-        for variant_name, variant_img in variants.items():
-            # Полноразмерная версия
-            full_bytes = convert_variant_to_bytes(variant_img, quality=85)
-            variant_full[variant_name] = full_bytes
             
-            # Превью (300x300)
-            preview_img = variant_img.copy()
+            # Валидация
+            valid, error = validate_image_bytes(file_bytes)
+            if not valid:
+                logger.warning(f"⚠️ Image {idx+1} invalid: {error}")
+                continue
+            
+            # Создаём превью (300x300)
+            img = Image.open(BytesIO(file_bytes))
+            
+            # Превью
+            preview_img = img.copy()
             preview_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
-            preview_bytes = convert_variant_to_bytes(preview_img, quality=70)
             
-            # Сохраняем превью временно
-            preview_filename = f"preview_{temp_id}_{variant_name}.jpg"
+            # Конвертируем в bytes
+            preview_output = BytesIO()
+            if preview_img.mode in ("RGBA", "P", "LA"):
+                preview_rgb = Image.new("RGB", preview_img.size, (255, 255, 255))
+                if preview_img.mode in ("RGBA", "LA"):
+                    preview_rgb.paste(preview_img, mask=preview_img.split()[-1])
+                else:
+                    preview_rgb.paste(preview_img)
+                preview_img = preview_rgb
+            
+            preview_img.save(preview_output, format='JPEG', quality=70, optimize=True)
+            preview_bytes = preview_output.getvalue()
+            
+            # Сохраняем превью
+            preview_filename = f"preview_{temp_id}_{variant_key}.jpg"
             preview_url = save_image(preview_filename, preview_bytes)
-            variant_previews[variant_name] = preview_url
-        
-        # 6. Сохраняем в временное хранилище
-        VARIANTS_STORAGE[temp_id] = {
-            "variants": variant_full,
-            "user_id": user_id,
-            "created_at": datetime.utcnow(),
-            "url": payload.url,
-            "previews": variant_previews
-        }
-        
-        # Очистка старых вариантов
-        cleanup_old_variants()
-        
-        return {
-            "temp_id": temp_id,
-            "suggested_name": suggested_name,
-            "variants": variant_previews,
-            "message": "Выберите лучший вариант изображения"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Variant generation failed: {e}")
-        raise HTTPException(500, f"Ошибка генерации вариантов: {str(e)}")
+            
+            variant_previews[variant_key] = preview_url
+            variant_full_urls[variant_key] = img_url  # Сохраняем оригинальный URL
+            
+            img.close()
+            
+            logger.info(f"✅ Preview {idx+1} created")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to process image {idx+1}: {e}")
+            continue
+    
+    if not variant_previews:
+        raise HTTPException(400, "Не удалось обработать ни одного изображения")
+    
+    # 4. Сохраняем во временное хранилище
+    VARIANTS_STORAGE[temp_id] = {
+        "image_urls": variant_full_urls,  # Оригинальные URL для скачивания
+        "user_id": user_id,
+        "created_at": datetime.utcnow(),
+        "previews": variant_previews,
+        "source_url": payload.url
+    }
+    
+    # Очистка старых
+    cleanup_old_variants()
+    
+    return {
+        "temp_id": temp_id,
+        "suggested_name": suggested_name,
+        "variants": variant_previews,
+        "total_images": len(variant_previews),
+        "message": "Выберите лучшее фото товара"
+    }
 
 @router.post("/select-variant", response_model=ItemResponse)
 async def select_and_save_variant(
@@ -664,38 +781,88 @@ async def select_and_save_variant(
     user_id: int = Depends(get_current_user_id)
 ):
     """
-    Шаг 2: Пользователь выбирает вариант, сохраняем в БД
+    Пользователь выбрал фото - скачиваем оригинал и сохраняем
     """
-    # Проверяем наличие вариантов
     if payload.temp_id not in VARIANTS_STORAGE:
         raise HTTPException(404, "Варианты не найдены или истекло время")
     
     stored = VARIANTS_STORAGE[payload.temp_id]
     
-    # Проверяем владельца
     if stored["user_id"] != user_id:
-        raise HTTPException(403, "Нет доступа к этим вариантам")
+        raise HTTPException(403, "Нет доступа")
     
-    # Получаем выбранный вариант
     selected_variant = payload.selected_variant
-    if selected_variant not in stored["variants"]:
+    if selected_variant not in stored["image_urls"]:
         raise HTTPException(400, f"Неизвестный вариант: {selected_variant}")
     
-    logger.info(f"💾 Saving selected variant: {selected_variant}")
+    logger.info(f"💾 User selected: {selected_variant}")
     
-    # Сохраняем выбранное изображение
-    final_bytes = stored["variants"][selected_variant]
-    final_filename = f"wardrobe_{uuid.uuid4().hex}.jpg"
-    final_url = save_image(final_filename, final_bytes)
+    # Получаем оригинальный URL выбранного изображения
+    selected_image_url = stored["image_urls"][selected_variant]
     
-    # Удаляем превью
+    # Скачиваем оригинал в полном размере
+    loop = asyncio.get_event_loop()
+    
+    try:
+        file_bytes = await loop.run_in_executor(
+            None,
+            lambda: download_image_bytes(selected_image_url)
+        )
+        
+        # Валидация
+        valid, error = validate_image_bytes(file_bytes)
+        if not valid:
+            raise HTTPException(400, error)
+        
+        # Обрабатываем и сохраняем
+        img = Image.open(BytesIO(file_bytes))
+        img_format = img.format or "JPEG"
+        
+        # Конвертация если нужна
+        need_conversion = img.mode in ("RGBA", "P", "LA", "L")
+        
+        if need_conversion:
+            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode in ("RGBA", "LA"):
+                rgb_img.paste(img, mask=img.split()[-1])
+            else:
+                rgb_img.paste(img)
+            img = rgb_img
+            
+            output = BytesIO()
+            img.save(output, format='JPEG', quality=85, optimize=True)
+            final_bytes = output.getvalue()
+            filename = f"wardrobe_{uuid.uuid4().hex}.jpg"
+        else:
+            final_bytes = file_bytes
+            ext = ".jpg"
+            if img_format.upper() in ['JPEG', 'JPG']:
+                ext = ".jpg"
+            elif img_format.upper() == 'PNG':
+                ext = ".png"
+            elif img_format.upper() == 'WEBP':
+                ext = ".webp"
+            
+            filename = f"wardrobe_{uuid.uuid4().hex}{ext}"
+        
+        img.close()
+        
+        # Сохраняем
+        final_url = save_image(filename, final_bytes)
+        logger.info(f"✅ Saved selected image: {final_url}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error saving selected image: {e}")
+        raise HTTPException(500, f"Ошибка сохранения: {str(e)}")
+    
+    # Удаляем все превью
     for preview_url in stored["previews"].values():
         try:
             delete_image(preview_url)
         except:
             pass
     
-    # Удаляем из временного хранилища
+    # Удаляем из хранилища
     del VARIANTS_STORAGE[payload.temp_id]
     
     # Сохраняем в БД
@@ -710,8 +877,9 @@ async def select_and_save_variant(
     db.commit()
     db.refresh(item)
     
-    logger.info(f"✅ Item saved: id={item.id}, variant={selected_variant}")
+    logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
