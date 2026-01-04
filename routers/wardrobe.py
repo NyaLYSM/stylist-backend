@@ -10,7 +10,7 @@ from PIL import Image
 
 # requests - для проверки доступности и скачивания
 import requests
-# curl_cffi - для парсинга страниц Ozon/Lamoda
+import concurrent.futures
 from curl_cffi import requests as crequests
 from bs4 import BeautifulSoup
 
@@ -185,36 +185,105 @@ def find_wb_image_url(nm_id: int) -> str:
     logger.warning(f"❌ Image not found on any WB server for ID {nm_id}")
     return None
 
-def find_wb_single_image(nm_id: int, vol: int, part: int, img_num: int) -> str:
+def find_all_wb_images_parallel(nm_id: int, vol: int, part: int, max_images: int = 10) -> list:
     """
-    Ищет конкретное изображение WB - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
+    ПАРАЛЛЕЛЬНЫЙ поиск всех изображений WB (быстро!)
     """
-    # Сокращаем список серверов до самых популярных
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in [1, 2, 3, 4, 5, 10, 11, 12]]
+    # Один из рабочих серверов (обычно basket-01 или basket-10)
+    working_hosts = [
+        "basket-01.wbbasket.ru",
+        "basket-10.wbbasket.ru", 
+        "basket-11.wbbasket.ru",
+        "basket-02.wbbasket.ru"
+    ]
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     
-    # Пробуем только jpg (webp часто не работает)
-    template = f"https://{{host}}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
+    def check_image(img_num):
+        """Проверяет существование изображения с номером img_num"""
+        for host in working_hosts:
+            url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
+            try:
+                resp = requests.head(url, headers=headers, timeout=1)
+                if resp.status_code == 200:
+                    return (img_num, url)
+            except:
+                continue
+        return (img_num, None)
     
-    for host in hosts:
-        url = template.format(host=host)
-        try:
-            # КРИТИЧНО: Уменьшаем timeout до 0.5 секунды
-            resp = requests.head(url, headers=headers, timeout=0.5)
-            if resp.status_code == 200:
-                return url
-        except:
-            continue
+    # ПАРАЛЛЕЛЬНАЯ проверка всех номеров (1-10)
+    found_images = {}
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(check_image, i) for i in range(1, max_images + 1)]
+        
+        for future in concurrent.futures.as_completed(futures):
+            img_num, url = future.result()
+            if url:
+                found_images[img_num] = url
+    
+    # Возвращаем в правильном порядке (1, 2, 3, ...)
+    result = []
+    for i in range(1, max_images + 1):
+        if i in found_images:
+            result.append(found_images[i])
+    
+    return result
+
+def get_wb_product_name(url: str, nm_id: int) -> str:
+    """
+    Извлекает название товара из HTML страницы WB
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # Запрашиваем саму страницу товара
+        response = crequests.get(url, impersonate="chrome120", timeout=10, allow_redirects=True)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, "lxml")
+            
+            # WB хранит название в разных местах, пробуем все:
+            
+            # 1. В meta og:title
+            og_title = soup.find("meta", property="og:title")
+            if og_title:
+                title = og_title.get("content")
+                if title and len(title) > 5:
+                    logger.info(f"✅ Found title in og:title: {title[:50]}...")
+                    return title
+            
+            # 2. В теге <h1>
+            h1 = soup.find("h1")
+            if h1:
+                title = h1.get_text(strip=True)
+                if title and len(title) > 5:
+                    logger.info(f"✅ Found title in h1: {title[:50]}...")
+                    return title
+            
+            # 3. В title страницы
+            if soup.title:
+                title = soup.title.string
+                if title:
+                    # Убираем "купить в Москве" и прочее
+                    title = title.split('|')[0].split('купить')[0].strip()
+                    if len(title) > 5:
+                        logger.info(f"✅ Found title in page title: {title[:50]}...")
+                        return title
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Could not fetch WB page title: {e}")
     
     return None
 
 def get_marketplace_data(url: str):
     """
     Возвращает: (список URL картинок, название товара)
-    ОПТИМИЗИРОВАНО: Ищет только до 5 изображений вместо 10
+    ОПТИМИЗИРОВАНО: Параллельный поиск + парсинг названия
     """
     image_urls = []
     title = None
@@ -230,63 +299,40 @@ def get_marketplace_data(url: str):
             nm_id = int(match.group(1))
             logger.info(f"✅ Extracted product ID: {nm_id}")
             
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            
-            # Пробуем API (быстро)
-            api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-            logger.info(f"🔍 Trying WB API...")
-            
-            try:
-                response = requests.get(api_url, headers=headers, timeout=5)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('data', {}).get('products'):
-                        product = data['data']['products'][0]
-                        title = product.get('name', 'Товар Wildberries')
-                        logger.info(f"✅ Got title from API")
-            except:
-                pass
-            
-            # CDN поиск (всегда выполняем)
-            logger.info(f"🔄 Searching CDN for images...")
-            
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # Ищем первое изображение (самое важное)
-            first_image = find_wb_image_url(nm_id)
+            # ПАРАЛЛЕЛЬНЫЙ поиск изображений (быстро!)
+            logger.info(f"🚀 Starting parallel image search...")
+            image_urls = find_all_wb_images_parallel(nm_id, vol, part, max_images=10)
             
-            if first_image:
-                image_urls.append(first_image)
-                logger.info(f"✅ Found first image")
-                
-                # Ищем остальные (МАКСИМУМ 4 дополнительных = всего 5)
-                for img_num in range(2, 6):  # 2, 3, 4, 5
-                    img_url = find_wb_single_image(nm_id, vol, part, img_num)
-                    if img_url:
-                        image_urls.append(img_url)
-                        logger.info(f"✅ Found image #{img_num}")
-                    # НЕ прерываем если не нашли - пробуем все 5
-                
-                logger.info(f"✅ Total found {len(image_urls)} images")
-                title = title or "Товар Wildberries"
-                return image_urls, title
-            else:
-                logger.error(f"❌ No images found")
-                return [], title
+            logger.info(f"✅ Found {len(image_urls)} images in parallel")
+            
+            # Извлекаем название из страницы товара
+            logger.info(f"📝 Fetching product name from page...")
+            title = get_wb_product_name(url, nm_id)
+            
+            if not title:
+                title = "Товар Wildberries"
+                logger.warning(f"⚠️ Could not extract title, using default")
+            
+            return image_urls, title
                 
         except Exception as e:
             logger.error(f"❌ WB error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return [], None
 
     # 2. Другие маркетплейсы
     try:
-        response = crequests.get(url, impersonate="chrome120", timeout=10, allow_redirects=True)
+        logger.info(f"🔍 Scraping from: {url[:50]}...")
+        response = crequests.get(url, impersonate="chrome120", timeout=12, allow_redirects=True)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "lxml")
             
+            # Название
             og_title = soup.find("meta", property="og:title")
             if og_title: 
                 title = og_title.get("content")
@@ -296,6 +342,7 @@ def get_marketplace_data(url: str):
             if title: 
                 title = title.split('|')[0].strip()
             
+            # Изображения
             og_image = soup.find("meta", property="og:image")
             if og_image:
                 image_urls.append(og_image.get("content"))
@@ -305,14 +352,16 @@ def get_marketplace_data(url: str):
                 if src and any(x in src for x in ['large', 'big', 'original', 'zoom']):
                     if src not in image_urls:
                         image_urls.append(src)
-                        if len(image_urls) >= 5:  # Максимум 5
+                        if len(image_urls) >= 10:
                             break
+            
+            logger.info(f"✅ Found {len(image_urls)} images via scraping")
 
     except Exception as e:
         logger.error(f"❌ Scraper error: {e}")
     
     return image_urls, title
-
+    
 def extract_smart_title(full_title: str) -> str:
     """
     Извлекает ключевые слова из названия товара
@@ -885,6 +934,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
