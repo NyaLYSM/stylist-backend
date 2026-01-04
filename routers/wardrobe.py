@@ -185,9 +185,36 @@ def find_wb_image_url(nm_id: int) -> str:
     logger.warning(f"❌ Image not found on any WB server for ID {nm_id}")
     return None
 
+def find_wb_single_image(nm_id: int, vol: int, part: int, img_num: int) -> str:
+    """
+    Ищет конкретное изображение WB - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
+    """
+    # Сокращаем список серверов до самых популярных
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in [1, 2, 3, 4, 5, 10, 11, 12]]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    # Пробуем только jpg (webp часто не работает)
+    template = f"https://{{host}}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
+    
+    for host in hosts:
+        url = template.format(host=host)
+        try:
+            # КРИТИЧНО: Уменьшаем timeout до 0.5 секунды
+            resp = requests.head(url, headers=headers, timeout=0.5)
+            if resp.status_code == 200:
+                return url
+        except:
+            continue
+    
+    return None
+
 def get_marketplace_data(url: str):
     """
     Возвращает: (список URL картинок, название товара)
+    ОПТИМИЗИРОВАНО: Ищет только до 5 изображений вместо 10
     """
     image_urls = []
     title = None
@@ -197,88 +224,65 @@ def get_marketplace_data(url: str):
         try:
             match = re.search(r'catalog/(\d+)', url)
             if not match:
-                logger.error("❌ Could not extract product ID from URL")
+                logger.error("❌ Could not extract product ID")
                 return [], None
                 
             nm_id = int(match.group(1))
             logger.info(f"✅ Extracted product ID: {nm_id}")
             
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
             
-            # Сначала пробуем API
+            # Пробуем API (быстро)
             api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-            logger.info(f"🔍 Trying WB API for ID {nm_id}...")
+            logger.info(f"🔍 Trying WB API...")
             
             try:
-                response = requests.get(api_url, headers=headers, timeout=10)
-                logger.info(f"📊 WB API response status: {response.status_code}")
+                response = requests.get(api_url, headers=headers, timeout=5)
                 
                 if response.status_code == 200:
                     data = response.json()
-                    
                     if data.get('data', {}).get('products'):
                         product = data['data']['products'][0]
                         title = product.get('name', 'Товар Wildberries')
-                        logger.info(f"✅ Got title from API: {title[:50]}...")
-                        
-                        # Пробуем получить изображения из API
-                        vol = nm_id // 100000
-                        part = nm_id // 1000
-                        
-                        for img_num in range(1, 11):
-                            img_url = find_wb_single_image(nm_id, vol, part, img_num)
-                            if img_url:
-                                image_urls.append(img_url)
-                            else:
-                                break
-                        
-                        if image_urls:
-                            logger.info(f"✅ Found {len(image_urls)} images via API method")
-                            return image_urls, title
-            except Exception as e:
-                logger.warning(f"⚠️ WB API failed: {e}")
+                        logger.info(f"✅ Got title from API")
+            except:
+                pass
             
-            # ФОЛЛБЭК: Если API не сработал, используем прямой поиск по CDN
-            logger.info(f"🔄 Falling back to CDN search...")
+            # CDN поиск (всегда выполняем)
+            logger.info(f"🔄 Searching CDN for images...")
             
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # Используем старый метод find_wb_image_url для поиска ПЕРВОГО изображения
+            # Ищем первое изображение (самое важное)
             first_image = find_wb_image_url(nm_id)
             
             if first_image:
                 image_urls.append(first_image)
-                logger.info(f"✅ Found first image via CDN: {first_image[:60]}...")
+                logger.info(f"✅ Found first image")
                 
-                # Теперь ищем остальные (2, 3, 4, ...)
-                for img_num in range(2, 11):
+                # Ищем остальные (МАКСИМУМ 4 дополнительных = всего 5)
+                for img_num in range(2, 6):  # 2, 3, 4, 5
                     img_url = find_wb_single_image(nm_id, vol, part, img_num)
                     if img_url:
                         image_urls.append(img_url)
                         logger.info(f"✅ Found image #{img_num}")
-                    else:
-                        break
+                    # НЕ прерываем если не нашли - пробуем все 5
                 
-                logger.info(f"✅ Total found {len(image_urls)} images via CDN fallback")
+                logger.info(f"✅ Total found {len(image_urls)} images")
                 title = title or "Товар Wildberries"
                 return image_urls, title
             else:
-                logger.error(f"❌ Could not find any images for WB product {nm_id}")
-                return [], None
+                logger.error(f"❌ No images found")
+                return [], title
                 
         except Exception as e:
-            logger.error(f"❌ WB logic failed: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"❌ WB error: {e}")
             return [], None
 
-    # 2. Другие маркетплейсы (Ozon, Lamoda)
+    # 2. Другие маркетплейсы
     try:
-        logger.info(f"🔍 Scraping from: {url[:50]}...")
-        response = crequests.get(url, impersonate="chrome120", timeout=12, allow_redirects=True)
+        response = crequests.get(url, impersonate="chrome120", timeout=10, allow_redirects=True)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "lxml")
@@ -301,40 +305,13 @@ def get_marketplace_data(url: str):
                 if src and any(x in src for x in ['large', 'big', 'original', 'zoom']):
                     if src not in image_urls:
                         image_urls.append(src)
-                        if len(image_urls) >= 10:
+                        if len(image_urls) >= 5:  # Максимум 5
                             break
-            
-            logger.info(f"✅ Found {len(image_urls)} images via scraping")
 
     except Exception as e:
-        logger.error(f"❌ Scraper error: {type(e).__name__}: {e}")
+        logger.error(f"❌ Scraper error: {e}")
     
     return image_urls, title
-    
-def find_wb_single_image(nm_id: int, vol: int, part: int, img_num: int) -> str:
-    """Ищет конкретное изображение WB"""
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 13)]
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-    
-    templates = [
-        f"https://{{host}}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg",
-        f"https://{{host}}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp",
-    ]
-    
-    for template in templates:
-        for host in hosts:
-            url = template.format(host=host)
-            try:
-                resp = requests.head(url, headers=headers, timeout=1)
-                if resp.status_code == 200:
-                    return url
-            except:
-                continue
-    
-    return None
 
 def extract_smart_title(full_title: str) -> str:
     """
@@ -908,6 +885,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
