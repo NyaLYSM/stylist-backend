@@ -207,56 +207,66 @@ def get_marketplace_data(url: str):
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
+            # Сначала пробуем API
             api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-            logger.info(f"🔍 Fetching WB product data for ID {nm_id}...")
+            logger.info(f"🔍 Trying WB API for ID {nm_id}...")
             
-            response = requests.get(api_url, headers=headers, timeout=10)
-            logger.info(f"📊 WB API response status: {response.status_code}")
+            try:
+                response = requests.get(api_url, headers=headers, timeout=10)
+                logger.info(f"📊 WB API response status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if data.get('data', {}).get('products'):
+                        product = data['data']['products'][0]
+                        title = product.get('name', 'Товар Wildberries')
+                        logger.info(f"✅ Got title from API: {title[:50]}...")
+                        
+                        # Пробуем получить изображения из API
+                        vol = nm_id // 100000
+                        part = nm_id // 1000
+                        
+                        for img_num in range(1, 11):
+                            img_url = find_wb_single_image(nm_id, vol, part, img_num)
+                            if img_url:
+                                image_urls.append(img_url)
+                            else:
+                                break
+                        
+                        if image_urls:
+                            logger.info(f"✅ Found {len(image_urls)} images via API method")
+                            return image_urls, title
+            except Exception as e:
+                logger.warning(f"⚠️ WB API failed: {e}")
             
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"📦 API response keys: {list(data.keys())}")
+            # ФОЛЛБЭК: Если API не сработал, используем прямой поиск по CDN
+            logger.info(f"🔄 Falling back to CDN search...")
+            
+            vol = nm_id // 100000
+            part = nm_id // 1000
+            
+            # Используем старый метод find_wb_image_url для поиска ПЕРВОГО изображения
+            first_image = find_wb_image_url(nm_id)
+            
+            if first_image:
+                image_urls.append(first_image)
+                logger.info(f"✅ Found first image via CDN: {first_image[:60]}...")
                 
-                if not data.get('data'):
-                    logger.error("❌ No 'data' key in response")
-                    return [], None
-                
-                if not data['data'].get('products'):
-                    logger.error("❌ No 'products' in data")
-                    return [], None
-                
-                product = data['data']['products'][0]
-                logger.info(f"✅ Product data found, keys: {list(product.keys())}")
-                
-                # Название
-                title = product.get('name', 'Товар Wildberries')
-                logger.info(f"📝 Product title: {title[:50]}...")
-                
-                # Вычисляем vol и part
-                vol = nm_id // 100000
-                part = nm_id // 1000
-                logger.info(f"📐 Calculated vol={vol}, part={part}")
-                
-                # Ищем изображения
-                for img_num in range(1, 11):
-                    logger.info(f"  🔍 Searching for image #{img_num}...")
+                # Теперь ищем остальные (2, 3, 4, ...)
+                for img_num in range(2, 11):
                     img_url = find_wb_single_image(nm_id, vol, part, img_num)
                     if img_url:
                         image_urls.append(img_url)
-                        logger.info(f"  ✅ Found image #{img_num}: {img_url[:60]}...")
+                        logger.info(f"✅ Found image #{img_num}")
                     else:
-                        logger.info(f"  ⚠️ Image #{img_num} not found, stopping search")
-                        break  # Останавливаемся если не нашли
+                        break
                 
-                logger.info(f"✅ Total found {len(image_urls)} images for WB product")
-                
-                if image_urls:
-                    return image_urls, title
-                else:
-                    logger.error("❌ No images found via CDN search")
-                    return [], title
+                logger.info(f"✅ Total found {len(image_urls)} images via CDN fallback")
+                title = title or "Товар Wildberries"
+                return image_urls, title
             else:
-                logger.error(f"❌ WB API returned status {response.status_code}")
+                logger.error(f"❌ Could not find any images for WB product {nm_id}")
                 return [], None
                 
         except Exception as e:
@@ -265,15 +275,14 @@ def get_marketplace_data(url: str):
             logger.error(traceback.format_exc())
             return [], None
 
-    # 2. Другие маркетплейсы
+    # 2. Другие маркетплейсы (Ozon, Lamoda)
     try:
-        logger.info(f"🔍 Trying to scrape from: {url[:50]}...")
+        logger.info(f"🔍 Scraping from: {url[:50]}...")
         response = crequests.get(url, impersonate="chrome120", timeout=12, allow_redirects=True)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, "lxml")
             
-            # Название
             og_title = soup.find("meta", property="og:title")
             if og_title: 
                 title = og_title.get("content")
@@ -283,12 +292,10 @@ def get_marketplace_data(url: str):
             if title: 
                 title = title.split('|')[0].strip()
             
-            # Основное изображение
             og_image = soup.find("meta", property="og:image")
             if og_image:
                 image_urls.append(og_image.get("content"))
             
-            # Дополнительные
             for img_tag in soup.find_all('img'):
                 src = img_tag.get('src') or img_tag.get('data-src')
                 if src and any(x in src for x in ['large', 'big', 'original', 'zoom']):
@@ -302,9 +309,8 @@ def get_marketplace_data(url: str):
     except Exception as e:
         logger.error(f"❌ Scraper error: {type(e).__name__}: {e}")
     
-    logger.info(f"📊 Returning {len(image_urls)} images and title: {title[:30] if title else 'None'}...")
     return image_urls, title
-
+    
 def find_wb_single_image(nm_id: int, vol: int, part: int, img_num: int) -> str:
     """Ищет конкретное изображение WB"""
     hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 13)]
@@ -902,6 +908,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
