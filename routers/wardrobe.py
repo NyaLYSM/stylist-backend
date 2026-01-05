@@ -24,8 +24,6 @@ from utils.storage import delete_image, save_image
 from utils.validators import validate_name
 from .dependencies import get_current_user_id
 
-_WB_SERVER_CACHE = {}
-
 # === ИНИЦИАЛИЗАЦИЯ LOGGER СНАЧАЛА ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,68 +100,6 @@ def validate_image_bytes(file_bytes: bytes):
     except Exception:
         return False, "Файл не является фото."
     return True, None
-
-def find_working_wb_server(nm_id: int, vol: int, part: int) -> str:
-    """
-    Находит ОДИН рабочий сервер для товара и кэширует его
-    """
-    # Проверяем кэш
-    cache_key = f"{vol}_{part}"
-    if cache_key in _WB_SERVER_CACHE:
-        cached_host = _WB_SERVER_CACHE[cache_key]
-        logger.info(f"📦 Using cached server: {cached_host}")
-        return cached_host
-    
-    # Самые популярные серверы (проверяем только их)
-    popular_hosts = [
-        "basket-10.wbbasket.ru",
-        "basket-11.wbbasket.ru",
-        "basket-01.wbbasket.ru",
-        "basket-02.wbbasket.ru",
-        "basket-12.wbbasket.ru",
-    ]
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    }
-    
-    # Ищем рабочий сервер (проверяем первое изображение)
-    test_url_template = "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
-    
-    for host in popular_hosts:
-        url = test_url_template.format(host=host, vol=vol, part=part, nm_id=nm_id)
-        try:
-            resp = requests.head(url, headers=headers, timeout=1)
-            if resp.status_code == 200:
-                logger.info(f"✅ Found working server: {host}")
-                _WB_SERVER_CACHE[cache_key] = host
-                return host
-        except:
-            continue
-    
-    logger.warning(f"⚠️ No working server found")
-    return None
-
-def get_all_wb_images_fast(nm_id: int, max_images: int = 8) -> list:
-    """
-    БЫСТРЫЙ поиск всех изображений
-    Использует ОДИН найденный сервер для всех изображений
-    """
-    vol = nm_id // 100000
-    part = nm_id // 1000
-    
-    # Находим рабочий сервер
-    working_host = find_working_wb_server(nm_id, vol, part)
-    
-    if not working_host:
-        logger.error(f"❌ Could not find working server")
-        return []
-    
-    logger.info(f"🚀 Fast search on {working_host}...")
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    }
     
     # Параллельно проверяем все номера НА ОДНОМ сервере
     def check_image(img_num):
@@ -197,48 +133,11 @@ def get_all_wb_images_fast(nm_id: int, max_images: int = 8) -> list:
     logger.info(f"✅ Found {len(result)} images in ~3 seconds")
     return result
 
-def get_wb_product_name(url: str) -> str:
-    """
-    Извлекает название - УПРОЩЕННАЯ ВЕРСИЯ
-    """
-    try:
-        logger.info(f"📝 Fetching title...")
-        
-        response = crequests.get(url, impersonate="chrome120", timeout=8)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, "lxml")
-            
-            # og:title
-            og_title = soup.find("meta", property="og:title")
-            if og_title:
-                title = og_title.get("content", "").strip()
-                if title:
-                    logger.info(f"✅ Title: {title[:40]}...")
-                    return title
-            
-            # h1
-            h1 = soup.find("h1")
-            if h1:
-                title = h1.get_text(strip=True)
-                if title:
-                    return title
-            
-            # title тег
-            if soup.title:
-                title = soup.title.string or ""
-                title = title.split('купить')[0].split('|')[0].strip()
-                if title:
-                    return title
-        
-    except Exception as e:
-        logger.warning(f"⚠️ Title fetch failed: {e}")
-    
-    return None
-
 def get_marketplace_data(url: str):
     """
-    ОПТИМИЗИРОВАННАЯ версия
+    ПРОСТАЯ И НАДЁЖНАЯ версия
+    Использует проверенный метод find_wb_image_url для первого фото
+    Затем последовательно ищет остальные
     """
     image_urls = []
     title = None
@@ -248,44 +147,109 @@ def get_marketplace_data(url: str):
         try:
             match = re.search(r'catalog/(\d+)', url)
             if not match:
+                logger.error("❌ Could not extract product ID")
                 return [], None
                 
             nm_id = int(match.group(1))
             logger.info(f"✅ Product ID: {nm_id}")
             
-            # БЫСТРЫЙ поиск изображений (3-5 секунд)
-            image_urls = get_all_wb_images_fast(nm_id, max_images=8)
+            vol = nm_id // 100000
+            part = nm_id // 1000
             
-            if not image_urls:
-                logger.error(f"❌ No images found")
+            # ИСПОЛЬЗУЕМ ПРОВЕРЕННЫЙ МЕТОД для первого фото
+            logger.info(f"🔍 Searching for first image...")
+            first_image = find_wb_image_url(nm_id)
+            
+            if not first_image:
+                logger.error(f"❌ First image not found")
                 return [], None
             
-            # Название (если не получится - не страшно)
-            title = get_wb_product_name(url)
+            image_urls.append(first_image)
+            logger.info(f"✅ First image found")
             
-            # Фоллбэк через API
+            # Извлекаем сервер из найденного URL
+            # Например: https://basket-10.wbbasket.ru/vol... -> basket-10.wbbasket.ru
+            import urllib.parse
+            parsed = urllib.parse.urlparse(first_image)
+            working_host = parsed.netloc
+            
+            logger.info(f"📦 Using server: {working_host}")
+            
+            # Теперь ищем остальные фото на ЭТОМ ЖЕ сервере
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            # Пробуем номера 2-8 (всего получится максимум 8 фото)
+            for img_num in range(2, 9):
+                url_jpg = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
+                url_webp = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp"
+                
+                found = False
+                for test_url in [url_jpg, url_webp]:
+                    try:
+                        resp = requests.head(test_url, headers=headers, timeout=2)
+                        if resp.status_code == 200:
+                            image_urls.append(test_url)
+                            logger.info(f"✅ Image #{img_num} found")
+                            found = True
+                            break
+                    except:
+                        continue
+                
+                # Если не нашли 2 подряд - останавливаемся
+                if not found and img_num > 3:
+                    logger.info(f"⏹️ Stopping search at #{img_num}")
+                    break
+            
+            logger.info(f"✅ Total: {len(image_urls)} images")
+            
+            # Извлекаем название
+            logger.info(f"📝 Fetching title...")
+            
+            # Пробуем через API (быстро)
+            try:
+                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                resp = requests.get(api_url, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get('data', {}).get('products'):
+                        title = data['data']['products'][0].get('name', '')
+                        if title:
+                            logger.info(f"✅ Title from API: {title[:40]}...")
+            except Exception as e:
+                logger.warning(f"⚠️ API title failed: {e}")
+            
+            # Пробуем парсить страницу (медленно, но точно)
             if not title:
                 try:
-                    api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                    resp = requests.get(api_url, timeout=3)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if data.get('data', {}).get('products'):
-                            title = data['data']['products'][0].get('name', '')
-                except:
-                    pass
+                    response = crequests.get(url, impersonate="chrome120", timeout=8)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.content, "lxml")
+                        
+                        og_title = soup.find("meta", property="og:title")
+                        if og_title:
+                            title = og_title.get("content", "").strip()
+                            if title:
+                                logger.info(f"✅ Title from page: {title[:40]}...")
+                except Exception as e:
+                    logger.warning(f"⚠️ Page title failed: {e}")
             
             if not title:
                 title = "Товар Wildberries"
+                logger.info(f"ℹ️ Using default title")
             
             return image_urls, title
                 
         except Exception as e:
-            logger.error(f"❌ Error: {e}")
+            logger.error(f"❌ WB error: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return [], None
 
     # Другие маркетплейсы
     try:
+        logger.info(f"🔍 Scraping: {url[:50]}...")
         response = crequests.get(url, impersonate="chrome120", timeout=10)
         
         if response.status_code == 200:
@@ -293,19 +257,23 @@ def get_marketplace_data(url: str):
             
             og_title = soup.find("meta", property="og:title")
             if og_title: 
-                title = og_title.get("content")
+                title = og_title.get("content", "").strip()
             
             og_image = soup.find("meta", property="og:image")
             if og_image:
-                image_urls.append(og_image.get("content"))
+                img_url = og_image.get("content")
+                if img_url and img_url.startswith('http'):
+                    image_urls.append(img_url)
             
-            for img_tag in soup.find_all('img'):
+            for img_tag in soup.find_all('img')[:20]:  # Первые 20 img тегов
                 src = img_tag.get('src') or img_tag.get('data-src')
                 if src and any(x in src for x in ['large', 'big', 'original']):
                     if src not in image_urls and src.startswith('http'):
                         image_urls.append(src)
                         if len(image_urls) >= 8:
                             break
+            
+            logger.info(f"✅ Found {len(image_urls)} images")
 
     except Exception as e:
         logger.error(f"❌ Scraper: {e}")
@@ -884,6 +852,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
