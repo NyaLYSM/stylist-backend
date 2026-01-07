@@ -133,6 +133,112 @@ def validate_image_bytes(file_bytes: bytes):
     logger.info(f"✅ Found {len(result)} images in ~3 seconds")
     return result
 
+def find_wb_image_url(nm_id: int) -> str:
+    """
+    Улучшенный метод поиска изображений WB с расширенной диагностикой
+    """
+    vol = nm_id // 100000
+    part = nm_id // 1000
+    
+    # Расширенный список серверов (актуализировано на 2025)
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26)]
+    
+    # Добавляем альтернативные домены
+    hosts.extend([f"basket-{i:02d}.wb.ru" for i in range(1, 13)])
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
+
+    logger.info(f"🔍 Searching WB image for ID {nm_id} (vol={vol}, part={part}) on {len(hosts)} servers...")
+
+    # Пробуем разные варианты URL
+    url_templates = [
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg",
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp",
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/c516x688/1.jpg",
+    ]
+
+    for template in url_templates:
+        for host in hosts:
+            url = template.format(host=host, vol=vol, part=part, nm_id=nm_id)
+            try:
+                # Увеличенный timeout для Render.com (2 сек вместо 0.5)
+                resp = requests.head(url, headers=headers, timeout=2, allow_redirects=True)
+                
+                if resp.status_code == 200:
+                    logger.info(f"✅ Image FOUND at: {host} (template: {template.split('/')[-3]})")
+                    return url
+                    
+                # Логируем важные ошибки
+                if resp.status_code in [403, 429, 498]:
+                    logger.debug(f"⚠️ {host}: HTTP {resp.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                logger.debug(f"⏱️ Timeout for {host}")
+                continue
+            except requests.exceptions.ConnectionError:
+                logger.debug(f"🔌 Connection error for {host}")
+                continue
+            except Exception as e:
+                logger.debug(f"❗ Error for {host}: {type(e).__name__}")
+                continue
+            
+    logger.warning(f"❌ Image not found on any WB server for ID {nm_id}")
+    return None
+
+def extract_smart_title(full_title: str) -> str:
+    """
+    Извлекает ключевые слова из названия товара
+    Пример: "Брюки женские палаццо широкие летние 2024" -> "Брюки палаццо"
+    """
+    if not full_title:
+        return "Покупка"
+    
+    # Убираем лишнее
+    title = full_title.lower()
+    
+    # Убираем размеры
+    title = re.sub(r'\b\d+[-/]\d+\b', '', title)  # 42-44, 42/44
+    title = re.sub(r'\b[xsmlXSML]{1,3}\b', '', title)  # S, M, L, XL, XXL
+    
+    # Убираем годы и сезоны
+    title = re.sub(r'\b20\d{2}\b', '', title)  # 2024, 2025
+    title = re.sub(r'\b(весна|лето|осень|зима|сезон)\b', '', title)
+    
+    # Убираем стоп-слова
+    stop_words = [
+        'женские', 'мужские', 'детские', 'для', 'новые', 'модные',
+        'стильные', 'красивые', 'качественные', 'купить', 'цена',
+        'интернет', 'магазин', 'доставка', 'скидка', 'распродажа'
+    ]
+    
+    for word in stop_words:
+        title = re.sub(rf'\b{word}\b', '', title)
+    
+    # Чистим пробелы
+    title = ' '.join(title.split())
+    
+    # Берем первые 2-3 значимых слова
+    words = title.split()
+    
+    # Фильтруем короткие слова (предлоги)
+    meaningful_words = [w for w in words if len(w) > 2]
+    
+    # Берём первые 2-3 слова
+    result_words = meaningful_words[:3] if len(meaningful_words) >= 3 else meaningful_words[:2]
+    
+    result = ' '.join(result_words).capitalize()
+    
+    # Если получилось слишком коротко
+    if len(result) < 3:
+        # Берём первые 30 символов оригинала
+        result = full_title[:30].strip()
+    
+    return result if result else "Покупка"
+
 def get_marketplace_data(url: str):
     """
     ПРОСТАЯ И НАДЁЖНАЯ версия
@@ -168,7 +274,6 @@ def get_marketplace_data(url: str):
             logger.info(f"✅ First image found")
             
             # Извлекаем сервер из найденного URL
-            # Например: https://basket-10.wbbasket.ru/vol... -> basket-10.wbbasket.ru
             import urllib.parse
             parsed = urllib.parse.urlparse(first_image)
             working_host = parsed.netloc
@@ -279,56 +384,6 @@ def get_marketplace_data(url: str):
         logger.error(f"❌ Scraper: {e}")
     
     return image_urls, title
-    
-def extract_smart_title(full_title: str) -> str:
-    """
-    Извлекает ключевые слова из названия товара
-    Пример: "Брюки женские палаццо широкие летние 2024" -> "Брюки палаццо"
-    """
-    if not full_title:
-        return "Покупка"
-    
-    # Убираем лишнее
-    title = full_title.lower()
-    
-    # Убираем размеры
-    title = re.sub(r'\b\d+[-/]\d+\b', '', title)  # 42-44, 42/44
-    title = re.sub(r'\b[xsmlXSML]{1,3}\b', '', title)  # S, M, L, XL, XXL
-    
-    # Убираем годы и сезоны
-    title = re.sub(r'\b20\d{2}\b', '', title)  # 2024, 2025
-    title = re.sub(r'\b(весна|лето|осень|зима|сезон)\b', '', title)
-    
-    # Убираем стоп-слова
-    stop_words = [
-        'женские', 'мужские', 'детские', 'для', 'новые', 'модные',
-        'стильные', 'красивые', 'качественные', 'купить', 'цена',
-        'интернет', 'магазин', 'доставка', 'скидка', 'распродажа'
-    ]
-    
-    for word in stop_words:
-        title = re.sub(rf'\b{word}\b', '', title)
-    
-    # Чистим пробелы
-    title = ' '.join(title.split())
-    
-    # Берем первые 2-3 значимых слова
-    words = title.split()
-    
-    # Фильтруем короткие слова (предлоги)
-    meaningful_words = [w for w in words if len(w) > 2]
-    
-    # Берём первые 2-3 слова
-    result_words = meaningful_words[:3] if len(meaningful_words) >= 3 else meaningful_words[:2]
-    
-    result = ' '.join(result_words).capitalize()
-    
-    # Если получилось слишком коротко
-    if len(result) < 3:
-        # Берём первые 30 символов оригинала
-        result = full_title[:30].strip()
-    
-    return result if result else "Покупка"
 
 def download_direct_url(image_url: str, name: str, user_id: int, item_type: str, db: Session):
     logger.info(f"Downloading from: {image_url}")
@@ -852,6 +907,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
