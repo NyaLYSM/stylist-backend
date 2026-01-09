@@ -271,14 +271,13 @@ def get_marketplace_data(url: str):
                     raise Exception(f"API returned {resp.status_code}")
                 
                 data = resp.json()
-
+                
+                # 🔥 ВРЕМЕННАЯ ОТЛАДКА - ПОСМОТРИМ СТРУКТУРУ API
                 import json
                 logger.info("=" * 80)
                 logger.info("📋 RAW API RESPONSE:")
-                logger.info(json.dumps(data, ensure_ascii=False, indent=2)[:2000])  # Первые 2000 символов
+                logger.info(json.dumps(data, ensure_ascii=False, indent=2)[:2000])
                 logger.info("=" * 80)
-                
-                if not data.get('data', {}).get('products'):
                 
                 if not data.get('data', {}).get('products'):
                     raise Exception("No products in API response")
@@ -1003,6 +1002,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
