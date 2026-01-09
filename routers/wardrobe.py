@@ -241,9 +241,7 @@ def extract_smart_title(full_title: str) -> str:
 
 def get_marketplace_data(url: str):
     """
-    ПРОСТАЯ И НАДЁЖНАЯ версия
-    Использует проверенный метод find_wb_image_url для первого фото
-    Затем последовательно ищет остальные
+    Улучшенная версия с API и защитой от чужих изображений
     """
     image_urls = []
     title = None
@@ -262,7 +260,30 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # ИСПОЛЬЗУЕМ ПРОВЕРЕННЫЙ МЕТОД для первого фото
+            # 🔥 СНАЧАЛА ПРОБУЕМ API (быстро и точно)
+            photo_count = None
+            try:
+                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                logger.info(f"📡 Trying API...")
+                resp = requests.get(api_url, timeout=5)
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get('data', {}).get('products'):
+                        product = data['data']['products'][0]
+                        title = product.get('name', '')
+                        
+                        # API возвращает точное количество фото
+                        media = product.get('media', {})
+                        images_data = media.get('images', [])
+                        photo_count = len(images_data)
+                        
+                        logger.info(f"✅ API: title='{title[:40]}...', photos={photo_count}")
+                        
+            except Exception as e:
+                logger.warning(f"⚠️ API failed: {e}")
+            
+            # ИЩЕМ ПЕРВОЕ ИЗОБРАЖЕНИЕ (проверенный метод)
             logger.info(f"🔍 Searching for first image...")
             first_image = find_wb_image_url(nm_id)
             
@@ -280,53 +301,63 @@ def get_marketplace_data(url: str):
             
             logger.info(f"📦 Using server: {working_host}")
             
+            # Определяем максимум для поиска
+            if photo_count:
+                max_search = min(photo_count, 10)  # API знает точное количество
+                logger.info(f"🎯 API says {photo_count} photos, will search up to {max_search}")
+            else:
+                max_search = 8  # Fallback: ищем до 8
+                logger.info(f"⚠️ No API data, will search up to {max_search}")
+            
             # Теперь ищем остальные фото на ЭТОМ ЖЕ сервере
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            # Пробуем номера 2-8 (всего получится максимум 8 фото)
-            for img_num in range(2, 9):
+            consecutive_fails = 0  # Счётчик неудач подряд
+            
+            for img_num in range(2, max_search + 1):
                 url_jpg = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
                 url_webp = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp"
                 
                 found = False
                 for test_url in [url_jpg, url_webp]:
                     try:
-                        resp = requests.head(test_url, headers=headers, timeout=2)
+                        # 🔥 ПРОВЕРЯЕМ ЗАГОЛОВКИ (быстрее чем скачивать)
+                        resp = requests.head(test_url, headers=headers, timeout=2, allow_redirects=True)
+                        
                         if resp.status_code == 200:
+                            # 🔥 ПРОВЕРКА НА ЗАГЛУШКУ
+                            content_length = resp.headers.get('Content-Length')
+                            if content_length and int(content_length) < 5000:
+                                logger.warning(f"⚠️ Image #{img_num} too small ({content_length}b) - likely a stub")
+                                continue
+                            
                             image_urls.append(test_url)
-                            logger.info(f"✅ Image #{img_num} found")
+                            logger.info(f"✅ Image #{img_num} found ({content_length}b)")
                             found = True
+                            consecutive_fails = 0  # Сбрасываем счётчик
                             break
-                    except:
+                            
+                    except Exception as e:
+                        logger.debug(f"🔍 {img_num} {test_url.split('/')[-1]}: {type(e).__name__}")
                         continue
                 
-                # Если не нашли 2 подряд - останавливаемся
-                if not found and img_num > 3:
-                    logger.info(f"⏹️ Stopping search at #{img_num}")
-                    break
+                if not found:
+                    consecutive_fails += 1
+                    logger.info(f"⚠️ Image #{img_num} not found")
+                    
+                    # 🔥 ЕСЛИ 2 ПОДРЯД НЕ НАШЛИ - ОСТАНАВЛИВАЕМСЯ
+                    # (это значит дальше фото точно нет)
+                    if consecutive_fails >= 2:
+                        logger.info(f"🛑 Stopping: {consecutive_fails} consecutive fails")
+                        break
             
             logger.info(f"✅ Total: {len(image_urls)} images")
             
-            # Извлекаем название
-            logger.info(f"📝 Fetching title...")
-            
-            # Пробуем через API (быстро)
-            try:
-                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                resp = requests.get(api_url, timeout=5)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get('data', {}).get('products'):
-                        title = data['data']['products'][0].get('name', '')
-                        if title:
-                            logger.info(f"✅ Title from API: {title[:40]}...")
-            except Exception as e:
-                logger.warning(f"⚠️ API title failed: {e}")
-            
-            # Пробуем парсить страницу (медленно, но точно)
+            # Если title не получили из API, пробуем парсить страницу
             if not title:
+                logger.info(f"🔍 Fetching title from page...")
                 try:
                     response = crequests.get(url, impersonate="chrome120", timeout=8)
                     if response.status_code == 200:
@@ -352,7 +383,7 @@ def get_marketplace_data(url: str):
             logger.error(traceback.format_exc())
             return [], None
 
-    # Другие маркетплейсы
+    # Другие маркетплейсы (без изменений)
     try:
         logger.info(f"🔍 Scraping: {url[:50]}...")
         response = crequests.get(url, impersonate="chrome120", timeout=10)
@@ -370,7 +401,7 @@ def get_marketplace_data(url: str):
                 if img_url and img_url.startswith('http'):
                     image_urls.append(img_url)
             
-            for img_tag in soup.find_all('img')[:20]:  # Первые 20 img тегов
+            for img_tag in soup.find_all('img')[:20]:
                 src = img_tag.get('src') or img_tag.get('data-src')
                 if src and any(x in src for x in ['large', 'big', 'original']):
                     if src not in image_urls and src.startswith('http'):
@@ -647,18 +678,59 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     return {"status": "success"}
 
 def download_image_bytes(image_url: str) -> bytes:
-    """Вспомогательная функция для скачивания bytes"""
+    """Вспомогательная функция для скачивания bytes с проверками"""
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://www.wildberries.ru/',
     }
     
-    response = requests.get(image_url, headers=headers, timeout=25, allow_redirects=True)
+    # 🔥 СНАЧАЛА ПРОВЕРЯЕМ РАЗМЕР (HEAD запрос - быстро)
+    try:
+        logger.info(f"📋 Checking image headers...")
+        head_resp = requests.head(image_url, headers=headers, timeout=5, allow_redirects=True)
+        content_length = head_resp.headers.get('Content-Length')
+        
+        if content_length:
+            size_mb = int(content_length) / (1024 * 1024)
+            logger.info(f"📦 Image size: {size_mb:.2f} MB")
+            
+            # Проверка на слишком большой файл
+            if size_mb > 10:
+                raise HTTPException(400, f"Изображение слишком большое: {size_mb:.1f} МБ (максимум 10 МБ)")
+            
+            # 🔥 ПРОВЕРКА НА ЗАГЛУШКУ (обычно <5KB = это не настоящее фото)
+            if int(content_length) < 5000:
+                logger.warning(f"⚠️ Suspiciously small image: {content_length} bytes")
+                raise HTTPException(400, "Получена заглушка вместо изображения (размер <5KB)")
+        else:
+            logger.warning(f"⚠️ No Content-Length header")
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"⚠️ Could not check headers: {e}")
+    
+    # Теперь скачиваем
+    logger.info(f"⬇️ Downloading image...")
+    start_time = time.time()
+    
+    response = requests.get(
+        image_url, 
+        headers=headers, 
+        timeout=30,  # Увеличил с 25 до 30 сек
+        stream=True,
+        allow_redirects=True
+    )
+    
+    download_time = time.time() - start_time
     
     if response.status_code != 200:
         raise HTTPException(400, f"Ошибка скачивания: код {response.status_code}")
     
-    return response.content
+    file_bytes = response.content
+    logger.info(f"✅ Downloaded {len(file_bytes)/1024:.1f}KB in {download_time:.2f}s")
+    
+    return file_bytes
 
 def cleanup_old_variants():
     """Удаляет варианты старше 10 минут"""
@@ -693,6 +765,11 @@ async def add_marketplace_with_variants(
     Возвращает превью для выбора лучшего варианта
     """
     loop = asyncio.get_event_loop()
+    
+    # 🔥 ДОБАВЬТЕ ЭТИ СТРОКИ:
+    logger.info(f"🚀 Starting variant processing")
+    logger.info(f"📍 URL: {payload.url}")
+    logger.info(f"👤 User: {user_id}")
     
     # 1. Получаем все изображения и название
     logger.info(f"🔍 Fetching marketplace images...")
@@ -731,11 +808,18 @@ async def add_marketplace_with_variants(
         variant_key = f"variant_{idx + 1}"
         
         try:
+            # 🔥 ДОБАВЛЕНО ЛОГИРОВАНИЕ
+            logger.info(f"📥 [{idx+1}/{len(image_urls)}] Processing: {img_url[:80]}...")
+            start_time = time.time()
+            
             # Скачиваем изображение
             file_bytes = await loop.run_in_executor(
                 None,
                 lambda url=img_url: download_image_bytes(url)
             )
+            
+            download_time = time.time() - start_time
+            logger.info(f"⏱️ Downloaded in {download_time:.2f}s")
             
             # Валидация
             valid, error = validate_image_bytes(file_bytes)
@@ -768,14 +852,14 @@ async def add_marketplace_with_variants(
             preview_url = save_image(preview_filename, preview_bytes)
             
             variant_previews[variant_key] = preview_url
-            variant_full_urls[variant_key] = img_url  # Сохраняем оригинальный URL
+            variant_full_urls[variant_key] = img_url
             
             img.close()
             
-            logger.info(f"✅ Preview {idx+1} created")
+            logger.info(f"✅ Preview {idx+1} created ({len(preview_bytes)/1024:.1f}KB)")
             
         except Exception as e:
-            logger.warning(f"⚠️ Failed to process image {idx+1}: {e}")
+            logger.warning(f"⚠️ Failed to process image {idx+1}: {type(e).__name__}: {e}")
             continue
     
     if not variant_previews:
@@ -907,6 +991,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
