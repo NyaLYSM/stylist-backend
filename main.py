@@ -21,6 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from routers import auth, wardrobe, api_auth, tg_auth
 from database import Base, engine
 
+Base.metadata.create_all(bind=engine)
+
 app = FastAPI(title="Stylist Backend")
 
 # === ВАЖНЫЙ ФИКС CORS ===
@@ -63,3 +65,4 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"])
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
+
