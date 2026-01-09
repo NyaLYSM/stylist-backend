@@ -31,13 +31,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://nyalysm.github.io",  # Ваш фронтенд
-        "http://localhost:3000",      # Для локальной разработки
-        "http://localhost:5173",
+        "http://localhost:3000",      # Для локальных тестов
     ],
-    allow_credentials=True,  # Разрешаем отправку заголовков авторизации
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_credentials=True,           # Поменяйте на True
+    allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],  # Добавлено для полной совместимости
 )
 
 @app.on_event("startup")
@@ -68,5 +66,6 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"])
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
+
 
 
