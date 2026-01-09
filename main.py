@@ -25,16 +25,19 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Stylist Backend")
 
-# === ВАЖНЫЙ ФИКС CORS ===
-# Для Telegram WebApp лучше разрешить всё, но allow_credentials=True 
-# требует указания конкретных доменов. 
-# Используем компромисс: "*" и allow_credentials=False (так как мы используем Bearer токены, а не куки)
+# === CORS НАСТРОЙКА ===
+# Указываем конкретный домен фронтенда для работы с credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=False, # Важно: False при allow_origins=["*"]
-    allow_methods=["*"],
+    allow_origins=[
+        "https://nyalysm.github.io",  # Ваш фронтенд
+        "http://localhost:3000",      # Для локальной разработки
+        "http://localhost:5173",
+    ],
+    allow_credentials=True,  # Разрешаем отправку заголовков авторизации
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Добавлено для полной совместимости
 )
 
 @app.on_event("startup")
@@ -65,4 +68,5 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"])
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
+
 
