@@ -95,14 +95,13 @@ def validate_telegram_data(init_data: str) -> dict:
         )
 
     if 'auth_date' in data:
-    auth_date = int(data['auth_date'])
-    current_time = int(datetime.utcnow().timestamp())
-    # Увеличьте до 24 часов (86400 сек), чтобы точно исключить эту ошибку при тестах
-    if current_time - auth_date > 86400: 
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Сессия истекла. Пожалуйста, перезапустите бота."
-        )
+        auth_date = int(data['auth_date']) # <--- Здесь должно быть 8 пробелов от края файла (или 2 таба)
+        current_time = int(datetime.utcnow().timestamp())
+        if current_time - auth_date > 86400: 
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                detail="Сессия истекла. Пожалуйста, перезапустите бота."
+            )
             
     if 'user' not in data:
          raise HTTPException(
@@ -154,4 +153,5 @@ def telegram_login(
     )
     
     return {"access_token": access_token, "token_type": "bearer"}
+
 
