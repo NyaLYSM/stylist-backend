@@ -241,7 +241,8 @@ def extract_smart_title(full_title: str) -> str:
 
 def get_marketplace_data(url: str):
     """
-    Улучшенная версия с API и защитой от чужих изображений
+    НОВАЯ ВЕРСИЯ: использует ТОЛЬКО API для получения списка изображений
+    Не гадает по номерам - берёт точные URL из API
     """
     image_urls = []
     title = None
@@ -260,122 +261,133 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # 🔥 СНАЧАЛА ПРОБУЕМ API (быстро и точно)
-            photo_count = None
+            # 🔥 ИСПОЛЬЗУЕМ ТОЛЬКО API
             try:
                 api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                logger.info(f"📡 Trying API...")
-                resp = requests.get(api_url, timeout=5)
+                logger.info(f"📡 Fetching data from API...")
+                resp = requests.get(api_url, timeout=10)
                 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get('data', {}).get('products'):
-                        product = data['data']['products'][0]
-                        title = product.get('name', '')
-                        
-                        # API возвращает точное количество фото
-                        media = product.get('media', {})
-                        images_data = media.get('images', [])
-                        photo_count = len(images_data)
-                        
-                        logger.info(f"✅ API: title='{title[:40]}...', photos={photo_count}")
-                        
-            except Exception as e:
-                logger.warning(f"⚠️ API failed: {e}")
-            
-            # ИЩЕМ ПЕРВОЕ ИЗОБРАЖЕНИЕ (проверенный метод)
-            logger.info(f"🔍 Searching for first image...")
-            first_image = find_wb_image_url(nm_id)
-            
-            if not first_image:
-                logger.error(f"❌ First image not found")
-                return [], None
-            
-            image_urls.append(first_image)
-            logger.info(f"✅ First image found")
-            
-            # Извлекаем сервер из найденного URL
-            import urllib.parse
-            parsed = urllib.parse.urlparse(first_image)
-            working_host = parsed.netloc
-            
-            logger.info(f"📦 Using server: {working_host}")
-            
-            # Определяем максимум для поиска
-            if photo_count:
-                max_search = min(photo_count, 10)  # API знает точное количество
-                logger.info(f"🎯 API says {photo_count} photos, will search up to {max_search}")
-            else:
-                max_search = 8  # Fallback: ищем до 8
-                logger.info(f"⚠️ No API data, will search up to {max_search}")
-            
-            # Теперь ищем остальные фото на ЭТОМ ЖЕ сервере
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            consecutive_fails = 0  # Счётчик неудач подряд
-            
-            for img_num in range(2, max_search + 1):
-                url_jpg = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
-                url_webp = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp"
+                if resp.status_code != 200:
+                    raise Exception(f"API returned {resp.status_code}")
                 
-                found = False
-                for test_url in [url_jpg, url_webp]:
-                    try:
-                        # 🔥 ПРОВЕРЯЕМ ЗАГОЛОВКИ (быстрее чем скачивать)
-                        resp = requests.head(test_url, headers=headers, timeout=2, allow_redirects=True)
-                        
-                        if resp.status_code == 200:
-                            # 🔥 ПРОВЕРКА НА ЗАГЛУШКУ
-                            content_length = resp.headers.get('Content-Length')
-                            if content_length and int(content_length) < 5000:
-                                logger.warning(f"⚠️ Image #{img_num} too small ({content_length}b) - likely a stub")
-                                continue
-                            
-                            image_urls.append(test_url)
-                            logger.info(f"✅ Image #{img_num} found ({content_length}b)")
-                            found = True
-                            consecutive_fails = 0  # Сбрасываем счётчик
-                            break
-                            
-                    except Exception as e:
-                        logger.debug(f"🔍 {img_num} {test_url.split('/')[-1]}: {type(e).__name__}")
-                        continue
+                data = resp.json()
+
+                import json
+                logger.info("=" * 80)
+                logger.info("📋 RAW API RESPONSE:")
+                logger.info(json.dumps(data, ensure_ascii=False, indent=2)[:2000])  # Первые 2000 символов
+                logger.info("=" * 80)
                 
-                if not found:
-                    consecutive_fails += 1
-                    logger.info(f"⚠️ Image #{img_num} not found")
+                if not data.get('data', {}).get('products'):
+                
+                if not data.get('data', {}).get('products'):
+                    raise Exception("No products in API response")
+                
+                product = data['data']['products'][0]
+                title = product.get('name', '')
+                
+                # 🔥 API ВОЗВРАЩАЕТ СПИСОК ИЗОБРАЖЕНИЙ
+                media = product.get('media', {})
+                images_data = media.get('images', [])
+                
+                if not images_data:
+                    logger.warning("⚠️ API returned no images")
+                    raise Exception("No images in API")
+                
+                logger.info(f"✅ API: title='{title[:40]}...', {len(images_data)} images")
+                
+                # 🔥 НАХОДИМ РАБОЧИЙ СЕРВЕР (проверяем первое фото)
+                first_image_url = find_wb_image_url(nm_id)
+                
+                if not first_image_url:
+                    logger.error("❌ Could not find working server")
+                    raise Exception("No working server found")
+                
+                # Извлекаем хост из рабочего URL
+                import urllib.parse
+                parsed = urllib.parse.urlparse(first_image_url)
+                working_host = parsed.netloc
+                
+                logger.info(f"📦 Working server: {working_host}")
+                
+                # 🔥 СТРОИМ URL ТОЛЬКО ДЛЯ ИЗОБРАЖЕНИЙ ИЗ API
+                # API возвращает массив, где каждый элемент - это номер фото
+                for img_data in images_data[:10]:  # Максимум 10 фото
+                    # В API могут быть разные форматы, обычно это просто номер
+                    # Пример: images_data = [1, 2, 3, 4]
+                    # Но бывает объект с полями
                     
-                    # 🔥 ЕСЛИ 2 ПОДРЯД НЕ НАШЛИ - ОСТАНАВЛИВАЕМСЯ
-                    # (это значит дальше фото точно нет)
-                    if consecutive_fails >= 2:
-                        logger.info(f"🛑 Stopping: {consecutive_fails} consecutive fails")
-                        break
-            
-            logger.info(f"✅ Total: {len(image_urls)} images")
-            
-            # Если title не получили из API, пробуем парсить страницу
-            if not title:
-                logger.info(f"🔍 Fetching title from page...")
-                try:
-                    response = crequests.get(url, impersonate="chrome120", timeout=8)
-                    if response.status_code == 200:
-                        soup = BeautifulSoup(response.content, "lxml")
-                        
-                        og_title = soup.find("meta", property="og:title")
-                        if og_title:
-                            title = og_title.get("content", "").strip()
-                            if title:
-                                logger.info(f"✅ Title from page: {title[:40]}...")
-                except Exception as e:
-                    logger.warning(f"⚠️ Page title failed: {e}")
-            
-            if not title:
-                title = "Товар Wildberries"
-                logger.info(f"ℹ️ Using default title")
-            
-            return image_urls, title
+                    if isinstance(img_data, dict):
+                        img_num = img_data.get('num') or img_data.get('id') or img_data.get('index')
+                    else:
+                        img_num = img_data
+                    
+                    if not img_num:
+                        continue
+                    
+                    # Пробуем разные форматы
+                    possible_urls = [
+                        f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg",
+                        f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp",
+                    ]
+                    
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    
+                    for test_url in possible_urls:
+                        try:
+                            resp = requests.head(test_url, headers=headers, timeout=3, allow_redirects=False)
+                            
+                            # 🔥 ВАЖНО: allow_redirects=False чтобы не попасть на чужое фото
+                            if resp.status_code == 200:
+                                content_length = resp.headers.get('Content-Length')
+                                
+                                # Проверка на заглушку
+                                if content_length and int(content_length) < 5000:
+                                    logger.warning(f"⚠️ Image #{img_num} too small, skipping")
+                                    continue
+                                
+                                image_urls.append(test_url)
+                                logger.info(f"✅ Image #{img_num} ({content_length}b)")
+                                break
+                                
+                        except Exception as e:
+                            logger.debug(f"🔍 {img_num}: {type(e).__name__}")
+                            continue
+                
+                if not image_urls:
+                    raise Exception("No valid images found on server")
+                
+                logger.info(f"✅ Total: {len(image_urls)} images")
+                return image_urls, title
+                
+            except Exception as e:
+                logger.error(f"❌ API method failed: {e}")
+                
+                # 🔥 FALLBACK: только первое фото старым методом
+                logger.info("🔄 Falling back to single image mode...")
+                first_image = find_wb_image_url(nm_id)
+                
+                if first_image:
+                    # Пробуем получить название из страницы
+                    if not title:
+                        try:
+                            response = crequests.get(url, impersonate="chrome120", timeout=8)
+                            if response.status_code == 200:
+                                soup = BeautifulSoup(response.content, "lxml")
+                                og_title = soup.find("meta", property="og:title")
+                                if og_title:
+                                    title = og_title.get("content", "").strip()
+                        except:
+                            pass
+                    
+                    if not title:
+                        title = "Товар Wildberries"
+                    
+                    return [first_image], title
+                
+                return [], None
                 
         except Exception as e:
             logger.error(f"❌ WB error: {type(e).__name__}: {e}")
@@ -991,6 +1003,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
