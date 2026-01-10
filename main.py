@@ -3,7 +3,6 @@ import sys
 import os
 import logging
 
-# Настраиваем логирование, чтобы видеть ВСЁ в консоли Render
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -21,19 +20,17 @@ from fastapi.staticfiles import StaticFiles
 from routers import auth, wardrobe, api_auth, tg_auth
 from database import Base, engine
 
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(title="Stylist Backend")
 
-# === CORS НАСТРОЙКА ===
-# Указываем конкретный домен фронтенда для работы с credentials
+# 🔥 CORS СРАЗУ ПОСЛЕ СОЗДАНИЯ APP (ДО ВСЕГО ОСТАЛЬНОГО)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://nyalysm.github.io",  # Ваш фронтенд
-        "http://localhost:3000",      # Для локальных тестов
+        "https://nyalysm.github.io",
+        "http://localhost:3000",
+        "http://localhost:5173",
     ],
-    allow_credentials=True,           # Поменяйте на True
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -42,7 +39,6 @@ app.add_middleware(
 async def startup_event():
     logger.info("🚀 ЗАПУСК СЕРВЕРА...")
     try:
-        # Создаем таблицы
         Base.metadata.create_all(bind=engine)
         logger.info("✅ Таблицы базы данных проверены/созданы")
     except Exception as e:
@@ -54,7 +50,6 @@ def root():
 
 @app.get("/health")
 def health_check():
-    # Простой ответ для проверки связи
     return {"status": "ok"}
 
 # Статика
@@ -66,6 +61,3 @@ app.mount("/static", StaticFiles(directory=static_path), name="static")
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(tg_auth.router, prefix="/api/auth", tags=["telegram_auth"])
 app.include_router(wardrobe.router, prefix="/api/wardrobe", tags=["wardrobe"])
-
-
-
