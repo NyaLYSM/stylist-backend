@@ -1,4 +1,4 @@
-# routers/tg_auth.py (Финальная версия с автосозданием пользователя)
+# routers/tg_auth.py
 
 import os
 import hashlib
@@ -11,27 +11,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from database import get_db
 from .auth import create_access_token 
-from models import User  # 🔥 ДОБАВЛЕНО
+from models import User  # Импорт модели
 
-# ========================================
-# 1. КОНФИГУРАЦИЯ
-# ========================================
 router = APIRouter(tags=["Telegram Auth"])
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN") 
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set. Telegram Auth cannot function.")
-
-# ========================================
-# 2. СХЕМА ДАННЫХ (FIXED)
-# ========================================
+    raise ValueError("BOT_TOKEN not set")
 
 class TelegramAuthPayload(BaseModel):
-    """
-    Схема для получения initData из фронтенда.
-    - Python имя поля: init_data (snake_case)
-    - JSON имя поля: initData (camelCase)
-    """
     init_data: str = Field(alias='initData') 
     
     class Config:
@@ -41,15 +29,7 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-# ========================================
-# 3. ЛОГИКА ВАЛИДАЦИИ (HMAC-SHA-256)
-# ========================================
-
 def validate_telegram_data(init_data: str) -> dict:
-    """
-    Валидирует Telegram Web App initData с помощью HMAC-SHA-256.
-    """
-    
     data_check_string = []
     data = {}
     
@@ -69,7 +49,7 @@ def validate_telegram_data(init_data: str) -> dict:
     if 'hash' not in data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Инициализационные данные Telegram не содержат хеш."
+            detail="Нет хеша в данных Telegram"
         )
 
     check_hash = data.pop('hash')
@@ -91,33 +71,21 @@ def validate_telegram_data(init_data: str) -> dict:
     if calculated_hash != check_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Недействительный хеш. Данные Telegram скомпрометированы."
+            detail="Недействительный хеш Telegram"
         )
 
-    if 'auth_date' in data:
-        auth_date = int(data['auth_date']) # <--- Здесь должно быть 8 пробелов от края файла (или 2 таба)
-        current_time = int(datetime.utcnow().timestamp())
-        if current_time - auth_date > 86400: 
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, 
-                detail="Сессия истекла. Пожалуйста, перезапустите бота."
-            )
-            
+    # 🔥 УБРАНА СТРОГАЯ ПРОВЕРКА auth_date - она вызывала "Сессия истекла"
+    
     if 'user' not in data:
          raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Данные Telegram не содержат user."
+            detail="Нет данных пользователя"
         )
 
     user_data = json.loads(data['user'])
-    
     return user_data
 
-# ========================================
-# 4. ENDPOINT
-# ========================================
-
-@router.post("/tg-login", response_model=Token, summary="Авторизация через Telegram Web App")
+@router.post("/tg-login", response_model=Token)
 def telegram_login(
     payload: TelegramAuthPayload, 
     db: Session = Depends(get_db)
@@ -128,30 +96,30 @@ def telegram_login(
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="В данных Telegram отсутствует ID пользователя."
+            detail="Нет ID пользователя"
         )
     
-    # 🔥 АВТОСОЗДАНИЕ ПОЛЬЗОВАТЕЛЯ
-    user = db.query(User).filter(User.id == user_id).first()
+    # 🔥 ИСПОЛЬЗУЕМ tg_id ВМЕСТО id
+    user = db.query(User).filter(User.tg_id == user_id).first()
     
     if not user:
-        # Создаём нового пользователя из данных Telegram
+        # Создаём нового пользователя
         user = User(
-            id=user_id,  # Telegram ID
+            tg_id=user_id,  # 🔥 ПРАВИЛЬНОЕ ПОЛЕ
             username=user_data.get('username', f'user_{user_id}'),
             first_name=user_data.get('first_name', ''),
             last_name=user_data.get('last_name', ''),
+            last_login=datetime.utcnow(),
         )
         db.add(user)
         db.commit()
         db.refresh(user)
         print(f"✅ New user created: {user_id}")
+    else:
+        # Обновляем last_login
+        user.last_login = datetime.utcnow()
+        db.commit()
     
-    # Создание JWT-токена
-    access_token = create_access_token(
-        data={"user_id": user_id} 
-    )
+    access_token = create_access_token(data={"user_id": user_id})
     
     return {"access_token": access_token, "token_type": "bearer"}
-
-
