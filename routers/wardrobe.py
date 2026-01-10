@@ -242,7 +242,6 @@ def extract_smart_title(full_title: str) -> str:
 def get_marketplace_data(url: str):
     """
     Получает 4 лучших изображения товара с Wildberries
-    Фильтрует таблицы размеров и технические фото
     """
     image_urls = []
     title = None
@@ -261,55 +260,72 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # 🔥 ИСПОЛЬЗУЕМ API ДЛЯ ПОЛУЧЕНИЯ ТОЧНОГО СПИСКА
+            # 🔥 ПОЛУЧАЕМ ДАННЫЕ ИЗ API
+            images_list = []
             try:
                 api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                logger.info(f"📡 Fetching from API...")
+                logger.info(f"📡 API URL: {api_url}")
                 resp = requests.get(api_url, timeout=10)
                 
-                if resp.status_code != 200:
-                    raise Exception(f"API returned {resp.status_code}")
+                logger.info(f"📡 API Status: {resp.status_code}")
                 
-                data = resp.json()
-                
-                if not data.get('data', {}).get('products'):
-                    raise Exception("No products in API response")
-                
-                product = data['data']['products'][0]
-                title = product.get('name', '')
-                
-                logger.info(f"✅ Title: {title[:50]}...")
-                
-                # 🔥 ПОЛУЧАЕМ МЕДИА ДАННЫЕ
-                media = product.get('media', {})
-                
-                # API возвращает разные форматы, проверим все варианты
-                images_list = []
-                
-                # Вариант 1: media.images - массив объектов
-                if isinstance(media.get('images'), list):
-                    for img in media['images']:
-                        if isinstance(img, dict):
-                            # Может быть {"big": "https://..."} или {"c246x328": 1}
-                            img_num = img.get('big') or img.get('c516x688') or img.get('tm')
-                            if img_num:
-                                images_list.append(img_num)
-                        else:
-                            # Просто номер
-                            images_list.append(img)
-                
-                # Вариант 2: Простой массив номеров
-                elif isinstance(media, dict):
-                    for key in ['images', 'photo']:
-                        if key in media and isinstance(media[key], list):
-                            images_list = media[key]
-                            break
-                
-                logger.info(f"📸 API images data: {images_list[:5]}...")  # Первые 5 для отладки
-                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    
+                    # 🔥 ПОДРОБНОЕ ЛОГИРОВАНИЕ API
+                    logger.info(f"📋 API Response keys: {list(data.keys())}")
+                    
+                    if data.get('data', {}).get('products'):
+                        product = data['data']['products'][0]
+                        title = product.get('name', '')
+                        
+                        logger.info(f"✅ Product name: {title[:60]}...")
+                        logger.info(f"📋 Product keys: {list(product.keys())}")
+                        
+                        # Проверяем разные варианты медиа
+                        media = product.get('media', {})
+                        logger.info(f"📋 Media keys: {list(media.keys()) if media else 'NO MEDIA'}")
+                        
+                        # Вариант 1: media.images
+                        if 'images' in media:
+                            raw_images = media['images']
+                            logger.info(f"📸 Raw images type: {type(raw_images)}")
+                            logger.info(f"📸 Raw images (first 3): {raw_images[:3] if isinstance(raw_images, list) else raw_images}")
+                            
+                            if isinstance(raw_images, list):
+                                for idx, img in enumerate(raw_images):
+                                    if isinstance(img, dict):
+                                        # Ищем номер в разных полях
+                                        num = img.get('big') or img.get('c516x688') or img.get('c246x328') or img.get('tm')
+                                        if num:
+                                            images_list.append(num)
+                                            logger.info(f"  → Image {idx+1}: {num} (from dict)")
+                                    elif isinstance(img, (int, str)):
+                                        images_list.append(img)
+                                        logger.info(f"  → Image {idx+1}: {img}")
+                        
+                        # Вариант 2: Прямо в products может быть photos
+                        if not images_list and 'photos' in product:
+                            logger.info(f"📸 Found 'photos' field: {product['photos'][:3]}")
+                            images_list = product['photos']
+                        
+                        logger.info(f"✅ Total images from API: {len(images_list)}")
+                    else:
+                        logger.warning("⚠️ No products in API response")
+                else:
+                    logger.warning(f"⚠️ API returned status {resp.status_code}")
+                    
             except Exception as e:
-                logger.warning(f"⚠️ API failed: {e}, using fallback")
-                images_list = list(range(1, 11))  # Fallback: пробуем 1-10
+                logger.error(f"❌ API error: {type(e).__name__}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Если API не дал результатов - используем простой перебор
+            if not images_list:
+                logger.warning("⚠️ API didn't return images, using fallback (1-10)")
+                images_list = list(range(1, 11))
+            
+            logger.info(f"📸 Images to check: {images_list[:10]}")
             
             # 🔥 НАХОДИМ РАБОЧИЙ СЕРВЕР
             first_image_url = find_wb_image_url(nm_id)
@@ -318,79 +334,70 @@ def get_marketplace_data(url: str):
                 logger.error("❌ Could not find working server")
                 return [], None
             
-            # Извлекаем хост
             import urllib.parse
             parsed = urllib.parse.urlparse(first_image_url)
             working_host = parsed.netloc
             
             logger.info(f"📦 Server: {working_host}")
             
-            # 🔥 СОБИРАЕМ ИЗОБРАЖЕНИЯ И ФИЛЬТРУЕМ
+            # 🔥 СОБИРАЕМ ИЗОБРАЖЕНИЯ С УСИЛЕННЫМ ФИЛЬТРОМ
             all_images = []
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            for img_num in images_list[:15]:  # Максимум 15 для проверки
-                # Если это уже URL
-                if isinstance(img_num, str) and img_num.startswith('http'):
-                    test_url = img_num
-                else:
-                    # Строим URL
-                    possible_urls = [
-                        f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg",
-                        f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp",
-                    ]
-                    
-                    found = False
-                    for test_url in possible_urls:
-                        try:
-                            resp = requests.head(test_url, headers=headers, timeout=3, allow_redirects=False)
+            for img_num in images_list[:15]:
+                possible_urls = [
+                    f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp",
+                    f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg",
+                ]
+                
+                for test_url in possible_urls:
+                    try:
+                        resp = requests.head(test_url, headers=headers, timeout=3, allow_redirects=False)
+                        
+                        if resp.status_code == 200:
+                            content_length = resp.headers.get('Content-Length')
                             
-                            if resp.status_code == 200:
-                                content_length = resp.headers.get('Content-Length')
+                            if content_length:
+                                size_kb = int(content_length) / 1024
                                 
-                                # 🔥 ФИЛЬТР 1: Проверка размера
-                                if content_length:
-                                    size_kb = int(content_length) / 1024
-                                    
-                                    # Пропускаем слишком маленькие (заглушки) и слишком большие
-                                    if size_kb < 5 or size_kb > 5000:
-                                        logger.debug(f"⚠️ Image #{img_num} size {size_kb:.1f}KB - skipped")
-                                        continue
-                                    
-                                    all_images.append({
-                                        'url': test_url,
-                                        'num': img_num,
-                                        'size': size_kb
-                                    })
-                                    logger.info(f"✅ Image #{img_num} ({size_kb:.1f}KB)")
-                                    found = True
-                                    break
-                                    
-                        except Exception as e:
-                            logger.debug(f"🔍 {img_num}: {type(e).__name__}")
-                            continue
-                    
-                    if found:
+                                # 🔥 УСИЛЕННЫЙ ФИЛЬТР: только фото >80KB
+                                # Обычно полноразмерные фото товара >100KB
+                                if size_kb < 80:
+                                    logger.debug(f"⚠️ #{img_num} too small ({size_kb:.1f}KB) - likely preview")
+                                    continue
+                                
+                                if size_kb > 8000:  # >8MB - подозрительно большое
+                                    logger.debug(f"⚠️ #{img_num} too large ({size_kb:.1f}KB)")
+                                    continue
+                                
+                                all_images.append({
+                                    'url': test_url,
+                                    'num': img_num,
+                                    'size': size_kb
+                                })
+                                logger.info(f"✅ Image #{img_num} ({size_kb:.1f}KB)")
+                                break
+                                
+                    except Exception as e:
+                        logger.debug(f"🔍 #{img_num}: {type(e).__name__}")
                         continue
             
             if not all_images:
-                logger.error("❌ No valid images found")
+                logger.error("❌ No images passed filters")
                 return [], None
             
-            # 🔥 УМНАЯ СОРТИРОВКА: предпочитаем средние по размеру (обычно лучше качество)
-            # Слишком маленькие - это превью, слишком большие - могут быть с водяными знаками
-            all_images.sort(key=lambda x: abs(x['size'] - 200))  # Оптимум ~200KB
+            # 🔥 СОРТИРОВКА: предпочитаем 150-400KB (оптимальное качество)
+            all_images.sort(key=lambda x: abs(x['size'] - 250))
             
-            # 🔥 БЕРЁМ ПЕРВЫЕ 4 ЛУЧШИХ
+            # Берём лучшие 4
             selected = all_images[:4]
             image_urls = [img['url'] for img in selected]
             
-            logger.info(f"✅ Selected {len(image_urls)} best images: " + 
+            logger.info(f"✅ Selected {len(image_urls)} images: " + 
                        ", ".join([f"#{img['num']}({img['size']:.0f}KB)" for img in selected]))
             
-            # 🔥 УМНОЕ ИЗВЛЕЧЕНИЕ НАЗВАНИЯ
             if title:
                 title = extract_smart_title(title)
             else:
@@ -1012,6 +1019,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
