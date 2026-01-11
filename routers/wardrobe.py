@@ -365,7 +365,6 @@ def get_marketplace_data(url: str):
                 logger.info(f"🌐 Page URL: {url}")
                 
                 try:
-                    # Увеличенный timeout и детальное логирование
                     logger.info(f"📡 Sending request to page...")
                     page_response = crequests.get(url, impersonate="chrome120", timeout=15)
                     
@@ -401,13 +400,12 @@ def get_marketplace_data(url: str):
                             if title_tag:
                                 raw_title = title_tag.get_text().strip()
                                 logger.info(f"📋 Raw title: '{raw_title[:60]}...'")
-                                # Убираем " - Wildberries" и подобное
                                 title = raw_title.split(' - ')[0].split(' | ')[0].strip()
                                 logger.info(f"✅ Title from <title>: '{title[:60]}...'")
                             else:
                                 logger.warning(f"⚠️ No title tag found")
                         
-                        # Вариант 4: JSON-LD (последняя надежда)
+                        # Вариант 4: JSON-LD
                         if not title or title == "Товар Wildberries":
                             logger.info(f"🔍 Looking for JSON-LD...")
                             script_ld = soup.find("script", {"type": "application/ld+json"})
@@ -415,7 +413,6 @@ def get_marketplace_data(url: str):
                                 try:
                                     import json
                                     ld_data = json.loads(script_ld.string)
-                                    logger.info(f"📋 JSON-LD type: {type(ld_data)}")
                                     
                                     if isinstance(ld_data, dict):
                                         title = ld_data.get('name', '')
@@ -429,15 +426,13 @@ def get_marketplace_data(url: str):
                                         logger.info(f"✅ Title from JSON-LD: '{title[:60]}...'")
                                 except Exception as json_err:
                                     logger.warning(f"⚠️ JSON-LD parse error: {json_err}")
-                            else:
-                                logger.warning(f"⚠️ No JSON-LD found")
                     else:
                         logger.error(f"❌ Bad page status: {page_response.status_code}")
                         
                 except Exception as e:
-                    logger.error(f"❌ Failed to get title from page: {type(e).__name__}: {e}")
+                    logger.error(f"❌ Failed to get title: {type(e).__name__}: {e}")
                     import traceback
-                    logger.error(f"Traceback:\n{traceback.format_exc()}")
+                    logger.error(traceback.format_exc())
             
             # 🔥 УМНАЯ ОБРАБОТКА НАЗВАНИЯ
             if title and title != "Товар Wildberries":
@@ -446,7 +441,7 @@ def get_marketplace_data(url: str):
                 logger.info(f"💡 Smart title: '{original_title[:40]}...' → '{title}'")
             else:
                 title = "Товар Wildberries"
-                logger.warning(f"⚠️ Using default title (title was: '{title}')")
+                logger.warning(f"⚠️ Using default title")
             
             return image_urls, title
             
@@ -1025,6 +1020,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
