@@ -360,7 +360,7 @@ def get_marketplace_data(url: str):
             logger.info(f"✅ Selected {len(image_urls)} images")
             
             # 🔥 ПОЛУЧЕНИЕ НАЗВАНИЯ СО СТРАНИЦЫ (ЕСЛИ API НЕ ДАЛ)
-            if not title:
+            if not title or title == "Товар Wildberries":
                 logger.info(f"🔍 Fetching title from page...")
                 try:
                     page_response = crequests.get(url, impersonate="chrome120", timeout=10)
@@ -1018,6 +1018,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
