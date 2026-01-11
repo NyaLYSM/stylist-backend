@@ -241,8 +241,7 @@ def extract_smart_title(full_title: str) -> str:
 
 def get_marketplace_data(url: str):
     """
-    Получает изображения товара с Wildberries
-    Использует несколько API endpoints
+    Получает изображения и название товара с маркетплейсов
     """
     image_urls = []
     title = None
@@ -261,14 +260,14 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # 🔥 ПРОБУЕМ НЕСКОЛЬКО API ENDPOINTS
+            # ПРОБУЕМ API
             images_list = []
             
-            # API 1: Основной (card.wb.ru)
             try:
                 api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
                 logger.info(f"📡 Trying API v2")
                 resp = requests.get(api_url, timeout=10)
+                logger.info(f"📡 API Status: {resp.status_code}")
                 
                 if resp.status_code == 200:
                     data = resp.json()
@@ -280,11 +279,9 @@ def get_marketplace_data(url: str):
                         if title:
                             logger.info(f"✅ Title from API: {title[:60]}...")
                         
-                        # Ищем изображения
                         if 'photos' in product:
                             images_list = [p for p in product['photos'] if p]
                             logger.info(f"📸 Found {len(images_list)} photos")
-                        
                         elif 'media' in product and 'images' in product['media']:
                             raw = product['media']['images']
                             if isinstance(raw, list):
@@ -299,32 +296,12 @@ def get_marketplace_data(url: str):
             except Exception as e:
                 logger.warning(f"⚠️ API v2 failed: {e}")
             
-            # API 2: Альтернативный JSON
+            # Fallback для изображений
             if not images_list:
-                try:
-                    api_url = f"https://basket-{vol % 10 + 1:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
-                    resp = requests.get(api_url, timeout=10)
-                    
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        
-                        if not title and 'imt_name' in data:
-                            title = data.get('imt_name', '')
-                            logger.info(f"✅ Title from JSON: {title[:60]}...")
-                        
-                        if 'media' in data and 'photo_count' in data['media']:
-                            photo_count = data['media']['photo_count']
-                            images_list = list(range(1, min(photo_count + 1, 16)))
-                            logger.info(f"📸 JSON says {photo_count} photos")
-                except Exception as e:
-                    logger.warning(f"⚠️ Product JSON failed: {e}")
-            
-            # Fallback
-            if not images_list:
-                logger.warning("⚠️ Using fallback (1-15)")
+                logger.warning("⚠️ Using fallback images (1-15)")
                 images_list = list(range(1, 16))
             
-            # 🔥 НАХОДИМ РАБОЧИЙ СЕРВЕР
+            # НАХОДИМ СЕРВЕР
             first_image_url = find_wb_image_url(nm_id)
             
             if not first_image_url:
@@ -337,7 +314,7 @@ def get_marketplace_data(url: str):
             
             logger.info(f"📦 Server: {working_host}")
             
-            # 🔥 СОБИРАЕМ ИЗОБРАЖЕНИЯ
+            # СОБИРАЕМ ИЗОБРАЖЕНИЯ
             all_images = []
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -370,8 +347,7 @@ def get_marketplace_data(url: str):
                                 logger.info(f"✅ Image #{img_num} ({size_kb:.1f}KB)")
                                 break
                                 
-                    except Exception as e:
-                        logger.debug(f"🔍 #{img_num}: {type(e).__name__}")
+                    except:
                         continue
             
             if not all_images:
@@ -383,37 +359,48 @@ def get_marketplace_data(url: str):
             
             logger.info(f"✅ Selected {len(image_urls)} images")
             
-            # 🔥 ПОЛУЧЕНИЕ НАЗВАНИЯ СО СТРАНИЦЫ (если API не дал)
+            # 🔥 ПОЛУЧЕНИЕ НАЗВАНИЯ СО СТРАНИЦЫ (ЕСЛИ API НЕ ДАЛ)
             if not title:
                 logger.info(f"🔍 Fetching title from page...")
                 try:
-                    response = crequests.get(url, impersonate="chrome120", timeout=10)
+                    page_response = crequests.get(url, impersonate="chrome120", timeout=10)
                     
-                    if response.status_code == 200:
-                        soup = BeautifulSoup(response.content, "lxml")
+                    if page_response.status_code == 200:
+                        soup = BeautifulSoup(page_response.content, "lxml")
                         
                         # Вариант 1: og:title
                         og_title = soup.find("meta", property="og:title")
                         if og_title:
                             title = og_title.get("content", "").strip()
-                            logger.info(f"✅ Title from page: {title[:60]}...")
+                            logger.info(f"✅ Title from og:title: {title[:60]}...")
                         
                         # Вариант 2: <h1>
                         if not title:
                             h1 = soup.find("h1")
                             if h1:
                                 title = h1.get_text().strip()
-                                logger.info(f"✅ Title from <h1>: {title[:60]}...")
+                                logger.info(f"✅ Title from h1: {title[:60]}...")
+                        
+                        # Вариант 3: title tag
+                        if not title:
+                            title_tag = soup.find("title")
+                            if title_tag:
+                                title = title_tag.get_text().strip()
+                                # Убираем " - Wildberries" и подобное
+                                title = title.split(' - ')[0].split(' | ')[0]
+                                logger.info(f"✅ Title from <title>: {title[:60]}...")
                         
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to get title: {e}")
+                    logger.warning(f"⚠️ Failed to get title from page: {e}")
             
-            # 🔥 УМНОЕ ИЗВЛЕЧЕНИЕ
-            if title:
+            # 🔥 УМНАЯ ОБРАБОТКА НАЗВАНИЯ
+            if title and title != "Товар Wildberries":
+                original_title = title
                 title = extract_smart_title(title)
-                logger.info(f"💡 Final title: '{title}'")
+                logger.info(f"💡 Smart title: '{original_title[:40]}...' → '{title}'")
             else:
                 title = "Товар Wildberries"
+                logger.warning(f"⚠️ Using default title")
             
             return image_urls, title
                 
@@ -422,6 +409,39 @@ def get_marketplace_data(url: str):
             import traceback
             logger.error(traceback.format_exc())
             return [], None
+
+    # Другие маркетплейсы
+    try:
+        logger.info(f"🔍 Scraping: {url[:50]}...")
+        response = crequests.get(url, impersonate="chrome120", timeout=10)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, "lxml")
+            
+            og_title = soup.find("meta", property="og:title")
+            if og_title: 
+                title = og_title.get("content", "").strip()
+            
+            og_image = soup.find("meta", property="og:image")
+            if og_image:
+                img_url = og_image.get("content")
+                if img_url and img_url.startswith('http'):
+                    image_urls.append(img_url)
+            
+            for img_tag in soup.find_all('img')[:20]:
+                src = img_tag.get('src') or img_tag.get('data-src')
+                if src and any(x in src for x in ['large', 'big', 'original']):
+                    if src not in image_urls and src.startswith('http'):
+                        image_urls.append(src)
+                        if len(image_urls) >= 8:
+                            break
+            
+            logger.info(f"✅ Found {len(image_urls)} images")
+
+    except Exception as e:
+        logger.error(f"❌ Scraper: {e}")
+    
+    return image_urls, title
             
 def download_direct_url(image_url: str, name: str, user_id: int, item_type: str, db: Session):
     logger.info(f"Downloading from: {image_url}")
@@ -998,6 +1018,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
