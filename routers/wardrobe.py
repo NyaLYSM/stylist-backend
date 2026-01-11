@@ -444,6 +444,45 @@ def get_marketplace_data(url: str):
                 logger.warning(f"⚠️ Using default title")
             
             return image_urls, title
+                
+        except Exception as e:
+            logger.error(f"❌ WB error: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return [], None
+
+    # Другие маркетплейсы
+    try:
+        logger.info(f"🔍 Scraping: {url[:50]}...")
+        response = crequests.get(url, impersonate="chrome120", timeout=10)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, "lxml")
+            
+            og_title = soup.find("meta", property="og:title")
+            if og_title: 
+                title = og_title.get("content", "").strip()
+            
+            og_image = soup.find("meta", property="og:image")
+            if og_image:
+                img_url = og_image.get("content")
+                if img_url and img_url.startswith('http'):
+                    image_urls.append(img_url)
+            
+            for img_tag in soup.find_all('img')[:20]:
+                src = img_tag.get('src') or img_tag.get('data-src')
+                if src and any(x in src for x in ['large', 'big', 'original']):
+                    if src not in image_urls and src.startswith('http'):
+                        image_urls.append(src)
+                        if len(image_urls) >= 8:
+                            break
+            
+            logger.info(f"✅ Found {len(image_urls)} images")
+
+    except Exception as e:
+        logger.error(f"❌ Scraper: {e}")
+    
+    return image_urls, title
             
 def download_direct_url(image_url: str, name: str, user_id: int, item_type: str, db: Session):
     logger.info(f"Downloading from: {image_url}")
@@ -1020,6 +1059,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
