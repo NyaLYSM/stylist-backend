@@ -241,7 +241,8 @@ def extract_smart_title(full_title: str) -> str:
 
 def get_marketplace_data(url: str):
     """
-    Получает 4 лучших изображения товара с Wildberries
+    Получает изображения товара с Wildberries
+    Использует несколько API endpoints
     """
     image_urls = []
     title = None
@@ -260,70 +261,70 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # 🔥 ПОЛУЧАЕМ ДАННЫЕ ИЗ API
+            # 🔥 ПРОБУЕМ НЕСКОЛЬКО API ENDPOINTS
             images_list = []
+            
+            # API 1: Основной (card.wb.ru)
             try:
-                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                logger.info(f"📡 API URL: {api_url}")
+                api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                logger.info(f"📡 Trying API v2: {api_url}")
                 resp = requests.get(api_url, timeout=10)
-                
-                logger.info(f"📡 API Status: {resp.status_code}")
+                logger.info(f"📡 API v2 Status: {resp.status_code}")
                 
                 if resp.status_code == 200:
                     data = resp.json()
                     
-                    # 🔥 ПОДРОБНОЕ ЛОГИРОВАНИЕ API
-                    logger.info(f"📋 API Response keys: {list(data.keys())}")
-                    
                     if data.get('data', {}).get('products'):
                         product = data['data']['products'][0]
                         title = product.get('name', '')
+                        logger.info(f"✅ Title: {title[:60]}...")
                         
-                        logger.info(f"✅ Product name: {title[:60]}...")
-                        logger.info(f"📋 Product keys: {list(product.keys())}")
+                        # Ищем изображения в разных полях
+                        if 'photos' in product:
+                            images_list = [p for p in product['photos'] if p]
+                            logger.info(f"📸 Found {len(images_list)} photos in 'photos' field")
                         
-                        # Проверяем разные варианты медиа
-                        media = product.get('media', {})
-                        logger.info(f"📋 Media keys: {list(media.keys()) if media else 'NO MEDIA'}")
-                        
-                        # Вариант 1: media.images
-                        if 'images' in media:
-                            raw_images = media['images']
-                            logger.info(f"📸 Raw images type: {type(raw_images)}")
-                            logger.info(f"📸 Raw images (first 3): {raw_images[:3] if isinstance(raw_images, list) else raw_images}")
-                            
-                            if isinstance(raw_images, list):
-                                for idx, img in enumerate(raw_images):
+                        elif 'media' in product and 'images' in product['media']:
+                            raw = product['media']['images']
+                            if isinstance(raw, list):
+                                for img in raw:
                                     if isinstance(img, dict):
-                                        # Ищем номер в разных полях
-                                        num = img.get('big') or img.get('c516x688') or img.get('c246x328') or img.get('tm')
+                                        num = img.get('big') or img.get('c516x688')
                                         if num:
                                             images_list.append(num)
-                                            logger.info(f"  → Image {idx+1}: {num} (from dict)")
-                                    elif isinstance(img, (int, str)):
+                                    else:
                                         images_list.append(img)
-                                        logger.info(f"  → Image {idx+1}: {img}")
-                        
-                        # Вариант 2: Прямо в products может быть photos
-                        if not images_list and 'photos' in product:
-                            logger.info(f"📸 Found 'photos' field: {product['photos'][:3]}")
-                            images_list = product['photos']
-                        
-                        logger.info(f"✅ Total images from API: {len(images_list)}")
-                    else:
-                        logger.warning("⚠️ No products in API response")
-                else:
-                    logger.warning(f"⚠️ API returned status {resp.status_code}")
-                    
+                            logger.info(f"📸 Found {len(images_list)} images in 'media.images'")
             except Exception as e:
-                logger.error(f"❌ API error: {type(e).__name__}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                logger.warning(f"⚠️ API v2 failed: {e}")
             
-            # Если API не дал результатов - используем простой перебор
+            # API 2: Альтернативный (продуктовый каталог)
             if not images_list:
-                logger.warning("⚠️ API didn't return images, using fallback (1-10)")
-                images_list = list(range(1, 11))
+                try:
+                    api_url = f"https://basket-{vol % 10 + 1:02d}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+                    logger.info(f"📡 Trying product JSON: {api_url[:80]}...")
+                    resp = requests.get(api_url, timeout=10)
+                    logger.info(f"📡 Product JSON Status: {resp.status_code}")
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        
+                        if 'nm_colors_names' in data:
+                            title = data.get('imt_name', '')
+                            logger.info(f"✅ Title from JSON: {title[:60]}...")
+                        
+                        # Ищем медиа файлы
+                        if 'media' in data and 'photo_count' in data['media']:
+                            photo_count = data['media']['photo_count']
+                            images_list = list(range(1, min(photo_count + 1, 16)))
+                            logger.info(f"📸 JSON says {photo_count} photos")
+                except Exception as e:
+                    logger.warning(f"⚠️ Product JSON failed: {e}")
+            
+            # Fallback: простой перебор 1-15
+            if not images_list:
+                logger.warning("⚠️ All APIs failed, using fallback (1-15)")
+                images_list = list(range(1, 16))
             
             logger.info(f"📸 Images to check: {images_list[:10]}")
             
@@ -340,13 +341,13 @@ def get_marketplace_data(url: str):
             
             logger.info(f"📦 Server: {working_host}")
             
-            # 🔥 СОБИРАЕМ ИЗОБРАЖЕНИЯ С УСИЛЕННЫМ ФИЛЬТРОМ
+            # 🔥 ПРОВЕРЯЕМ ИЗОБРАЖЕНИЯ С МЯГКИМ ФИЛЬТРОМ
             all_images = []
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            for img_num in images_list[:15]:
+            for img_num in images_list:
                 possible_urls = [
                     f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp",
                     f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg",
@@ -362,13 +363,13 @@ def get_marketplace_data(url: str):
                             if content_length:
                                 size_kb = int(content_length) / 1024
                                 
-                                # 🔥 УСИЛЕННЫЙ ФИЛЬТР: только фото >80KB
-                                # Обычно полноразмерные фото товара >100KB
-                                if size_kb < 80:
-                                    logger.debug(f"⚠️ #{img_num} too small ({size_kb:.1f}KB) - likely preview")
+                                # 🔥 МЯГКИЙ ФИЛЬТР: от 10KB до 10MB
+                                # (Wildberries может сжимать webp очень сильно)
+                                if size_kb < 10:
+                                    logger.debug(f"⚠️ #{img_num} too small ({size_kb:.1f}KB)")
                                     continue
                                 
-                                if size_kb > 8000:  # >8MB - подозрительно большое
+                                if size_kb > 10000:
                                     logger.debug(f"⚠️ #{img_num} too large ({size_kb:.1f}KB)")
                                     continue
                                 
@@ -385,13 +386,10 @@ def get_marketplace_data(url: str):
                         continue
             
             if not all_images:
-                logger.error("❌ No images passed filters")
+                logger.error("❌ No images found")
                 return [], None
             
-            # 🔥 СОРТИРОВКА: предпочитаем 150-400KB (оптимальное качество)
-            all_images.sort(key=lambda x: abs(x['size'] - 250))
-            
-            # Берём лучшие 4
+            # 🔥 БЕРЁМ ПЕРВЫЕ 4 (они идут в порядке 1,2,3,4... это правильный порядок WB)
             selected = all_images[:4]
             image_urls = [img['url'] for img in selected]
             
@@ -401,7 +399,20 @@ def get_marketplace_data(url: str):
             if title:
                 title = extract_smart_title(title)
             else:
-                title = "Товар Wildberries"
+                # Получаем название со страницы
+                try:
+                    response = crequests.get(url, impersonate="chrome120", timeout=8)
+                    if response.status_code == 200:
+                        soup = BeautifulSoup(response.content, "lxml")
+                        og_title = soup.find("meta", property="og:title")
+                        if og_title:
+                            title = og_title.get("content", "").strip()
+                            title = extract_smart_title(title)
+                except:
+                    pass
+                
+                if not title:
+                    title = "Товар Wildberries"
             
             return image_urls, title
                 
@@ -1019,6 +1030,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
