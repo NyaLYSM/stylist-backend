@@ -846,6 +846,11 @@ async def add_marketplace_with_variants(
         lambda: get_marketplace_data(payload.url)
     )
     
+    # 🔥 ОТЛАДКА
+    logger.info(f"🎯 Returned from get_marketplace_data:")
+    logger.info(f"   - Images: {len(image_urls)} found")
+    logger.info(f"   - Title: '{full_title}'")
+    
     if not image_urls:
         raise HTTPException(
             400, 
@@ -1059,6 +1064,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
