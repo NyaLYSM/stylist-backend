@@ -243,6 +243,11 @@ def get_marketplace_data(url: str):
     """
     Получает изображения и название товара с маркетплейсов
     """
+
+    logger.info("=" * 80)
+    logger.info(f"🌐 get_marketplace_data() called with URL: {url}")
+    logger.info("=" * 80)
+    
     image_urls = []
     title = None
     
@@ -481,6 +486,12 @@ def get_marketplace_data(url: str):
 
     except Exception as e:
         logger.error(f"❌ Scraper: {e}")
+
+    logger.info("=" * 80)
+    logger.info(f"🎬 get_marketplace_data() ENDING:")
+    logger.info(f"   - Returning {len(image_urls)} images")
+    logger.info(f"   - Returning title: '{title}'")
+    logger.info("=" * 80)
     
     return image_urls, title
             
@@ -1064,6 +1075,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
