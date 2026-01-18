@@ -208,8 +208,9 @@ def extract_smart_title(full_title: str) -> str:
     title = re.sub(r'\b20\d{2}\b', '', title)  # 2024, 2025
     title = re.sub(r'\b(весна|лето|осень|зима|сезон)\b', '', title)
     
-    # Убираем стоп-слова
+    # ⭐ ДОБАВИТЬ "товар" в стоп-слова
     stop_words = [
+        'товар', 'товары', 'wildberries', 'wb', 'вайлдберриз',  # ← НОВОЕ
         'женские', 'мужские', 'детские', 'для', 'новые', 'модные',
         'стильные', 'красивые', 'качественные', 'купить', 'цена',
         'интернет', 'магазин', 'доставка', 'скидка', 'распродажа'
@@ -234,8 +235,8 @@ def extract_smart_title(full_title: str) -> str:
     
     # Если получилось слишком коротко
     if len(result) < 3:
-        # Берём первые 30 символов оригинала
-        result = full_title[:30].strip()
+        # Берём первые 50 символов оригинала
+        result = full_title[:50].strip()
     
     return result if result else "Покупка"
 
@@ -1130,6 +1131,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
