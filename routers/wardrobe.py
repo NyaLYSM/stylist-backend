@@ -479,6 +479,14 @@ def get_marketplace_data(url: str):
             else:
                 title = "Покупка"
                 logger.warning(f"⚠️ Using fallback title: '{title}'")
+            
+            return image_urls, title  # ← 🔥 ДОБАВИТЬ!
+                
+        except Exception as e:  # ← 🔥 ДОБАВИТЬ!
+            logger.error(f"❌ WB error: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return [], None
     
 
     # Другие маркетплейсы
@@ -1100,6 +1108,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
