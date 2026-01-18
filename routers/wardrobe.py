@@ -100,38 +100,6 @@ def validate_image_bytes(file_bytes: bytes):
     except Exception:
         return False, "Файл не является фото."
     return True, None
-    
-    # Параллельно проверяем все номера НА ОДНОМ сервере
-    def check_image(img_num):
-        url_jpg = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.jpg"
-        url_webp = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp"
-        
-        for url in [url_jpg, url_webp]:
-            try:
-                resp = requests.head(url, headers=headers, timeout=1)
-                if resp.status_code == 200:
-                    return (img_num, url)
-            except:
-                continue
-        
-        return (img_num, None)
-    
-    found_images = {}
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(check_image, i) for i in range(1, max_images + 1)]
-        
-        for future in concurrent.futures.as_completed(futures):
-            img_num, url = future.result()
-            if url:
-                found_images[img_num] = url
-                logger.info(f"  ✅ Image #{img_num}")
-    
-    # Возвращаем в порядке
-    result = [found_images[i] for i in range(1, max_images + 1) if i in found_images]
-    
-    logger.info(f"✅ Found {len(result)} images in ~3 seconds")
-    return result
 
 def find_wb_image_url(nm_id: int) -> str:
     """
@@ -1132,6 +1100,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
