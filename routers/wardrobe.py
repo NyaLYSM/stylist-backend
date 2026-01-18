@@ -497,7 +497,7 @@ def get_marketplace_data(url: str):
                                         logger.debug(f"⚠️ JSON-LD parse error: {json_err}")
                     else:
                         logger.error(f"❌ Bad page status: {page_response.status_code}")
-                
+            
                 except Exception as e:
                     logger.error(f"❌ Failed to get title: {type(e).__name__}: {e}")
                     import traceback
@@ -511,14 +511,7 @@ def get_marketplace_data(url: str):
             else:
                 title = "Покупка"
                 logger.warning(f"⚠️ Using fallback title: '{title}'")
-            
-            return image_urls, title  # ← 🔥 ДОБАВИТЬ RETURN!
-                
-        except Exception as e:
-            logger.error(f"❌ WB error: {type(e).__name__}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return [], None
+    
 
     # Другие маркетплейсы
     try:
@@ -1139,6 +1132,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
