@@ -234,100 +234,89 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # ПРОБУЕМ API (НЕСКОЛЬКО ВАРИАНТОВ)
+                        # ПРОБУЕМ API (МНОЖЕСТВО ВАРИАНТОВ)
             images_list = []
             
-            # Вариант 1: API v2 с расширенными заголовками
+            # Вариант 1: Новый API endpoint (работает в 2025-2026)
             try:
-                api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                logger.info(f"📡 Trying API v2: {api_url}")
+                # Этот endpoint более стабильный
+                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                logger.info(f"📡 Trying API v1: {api_url}")
                 
                 headers_api = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
-                    'Accept-Language': 'ru-RU,ru;q=0.9',
-                    'Origin': 'https://www.wildberries.ru',
-                    'Referer': f'https://www.wildberries.ru/catalog/{nm_id}/detail.aspx',
-                    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-                    'sec-ch-ua-mobile': '?0',
-                    'sec-ch-ua-platform': '"Windows"',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'ru',
                 }
                 
                 resp = requests.get(api_url, headers=headers_api, timeout=10)
-                logger.info(f"📡 API Status: {resp.status_code}")
+                logger.info(f"📡 API v1 Status: {resp.status_code}")
                 
                 if resp.status_code == 200:
                     data = resp.json()
-                    logger.info(f"📡 API Response keys: {list(data.keys())}")
                     
                     if data.get('data', {}).get('products'):
-                        products = data['data']['products']
-                        logger.info(f"📡 Found {len(products)} products in API response")
+                        product = data['data']['products'][0]
                         
-                        product = products[0]
-                        logger.info(f"📡 Product keys: {list(product.keys())}")
-                        
-                        # Пробуем разные поля для названия
-                        title = (
-                            product.get('name') or 
-                            product.get('goodsName') or 
-                            product.get('title') or 
-                            product.get('brand', '') + ' ' + product.get('subject', '')
-                        ).strip()
+                        # Извлекаем название
+                        title = product.get('name', '').strip()
                         
                         if title:
-                            logger.info(f"✅ Title from API v2: '{title[:60]}...'")
-                        else:
-                            logger.warning(f"⚠️ API v2 returned empty title")
-                            logger.warning(f"⚠️ Product data sample: {str(product)[:200]}")
+                            logger.info(f"✅ Title from API v1: '{title[:60]}...'")
                         
-                        # Получаем изображения
-                        if 'photos' in product:
+                        # Извлекаем фото
+                        if 'colors' in product:
+                            for color in product['colors']:
+                                if 'photos' in color:
+                                    images_list.extend([p for p in color['photos'] if p])
+                            logger.info(f"📸 Found {len(images_list)} photos from colors")
+                        elif 'photos' in product:
                             images_list = [p for p in product['photos'] if p]
-                            logger.info(f"📸 Found {len(images_list)} photos in 'photos'")
-                        elif 'media' in product and 'images' in product['media']:
-                            raw = product['media']['images']
-                            if isinstance(raw, list):
-                                for img in raw:
-                                    if isinstance(img, dict):
-                                        num = img.get('big') or img.get('c516x688')
-                                        if num:
-                                            images_list.append(num)
-                                    else:
-                                        images_list.append(img)
-                            logger.info(f"📸 Found {len(images_list)} images in 'media.images'")
-                    else:
-                        logger.warning(f"⚠️ No products in API response")
-                        if 'data' in data:
-                            logger.warning(f"⚠️ Data keys: {list(data['data'].keys())}")
-                else:
-                    logger.warning(f"⚠️ API v2 returned status {resp.status_code}")
-                    
+                            logger.info(f"📸 Found {len(images_list)} photos")
+                            
             except Exception as e:
-                logger.warning(f"⚠️ API v2 failed: {type(e).__name__}: {e}")
+                logger.warning(f"⚠️ API v1 failed: {e}")
             
-            # Вариант 2: Альтернативный API endpoint (если v2 не дал название)
+            # Вариант 2: Публичный API карточек (если v1 не сработал)
             if not title:
                 try:
-                    api_v1_url = f"https://card.wb.ru/cards/detail?spp=30&regions=80,38,83,4,64,33,68,70,30,40,86,75,69,22,1,31,66,110,48,71,114&stores=117673,122258,122259,125238,125239,125240,6158,507,3158,117501,120602,120762,6159,204939,130744,159402,2737,130744,117986,1733,686,132043&curr=rub&dest=-1257786&nm={nm_id}"
-                    logger.info(f"📡 Trying alternative API...")
+                    api_url_public = f"https://www.wildberries.ru/webapi/product/data?targetUrl=SP&lang=ru&curr=rub&dest=-1257786&nm={nm_id}"
+                    logger.info(f"📡 Trying public API...")
                     
-                    resp_alt = requests.get(api_v1_url, headers=headers_api, timeout=10)
+                    resp_pub = requests.get(api_url_public, headers=headers_api, timeout=10)
                     
-                    if resp_alt.status_code == 200:
-                        data_alt = resp_alt.json()
-                        if data_alt.get('data', {}).get('products'):
-                            product_alt = data_alt['data']['products'][0]
-                            title = (
-                                product_alt.get('name') or 
-                                product_alt.get('goodsName') or 
-                                ''
-                            ).strip()
-                            
-                            if title:
-                                logger.info(f"✅ Title from alternative API: '{title[:60]}...'")
+                    if resp_pub.status_code == 200:
+                        data_pub = resp_pub.json()
+                        
+                        if 'data' in data_pub and 'nomenclatures' in data_pub['data']:
+                            nomenclatures = data_pub['data']['nomenclatures']
+                            if nomenclatures:
+                                item = nomenclatures[0]
+                                title = item.get('name', '').strip()
+                                
+                                if title:
+                                    logger.info(f"✅ Title from public API: '{title[:60]}...'")
+                                    
                 except Exception as e:
-                    logger.warning(f"⚠️ Alternative API failed: {e}")
+                    logger.warning(f"⚠️ Public API failed: {e}")
+            
+            # Вариант 3: Basket API (крайний случай)
+            if not title:
+                try:
+                    basket_api = f"https://basket-{nm_id % 20 + 1:02d}.wb.ru/vol{vol}/part{part}/{nm_id}/info/ru/card.json"
+                    logger.info(f"📡 Trying basket API...")
+                    
+                    resp_basket = requests.get(basket_api, timeout=5)
+                    
+                    if resp_basket.status_code == 200:
+                        basket_data = resp_basket.json()
+                        title = basket_data.get('imt_name', '').strip()
+                        
+                        if title:
+                            logger.info(f"✅ Title from basket API: '{title[:60]}...'")
+                            
+                except Exception as e:
+                    logger.warning(f"⚠️ Basket API failed: {e}")
             
             # Fallback для изображений
             if not images_list:
@@ -1167,6 +1156,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
