@@ -234,28 +234,57 @@ def get_marketplace_data(url: str):
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            # ПРОБУЕМ API
+            # ПРОБУЕМ API (НЕСКОЛЬКО ВАРИАНТОВ)
             images_list = []
             
+            # Вариант 1: API v2 с расширенными заголовками
             try:
                 api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                logger.info(f"📡 Trying API v2")
-                resp = requests.get(api_url, timeout=10)
+                logger.info(f"📡 Trying API v2: {api_url}")
+                
+                headers_api = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                    'Accept': '*/*',
+                    'Accept-Language': 'ru-RU,ru;q=0.9',
+                    'Origin': 'https://www.wildberries.ru',
+                    'Referer': f'https://www.wildberries.ru/catalog/{nm_id}/detail.aspx',
+                    'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                    'sec-ch-ua-mobile': '?0',
+                    'sec-ch-ua-platform': '"Windows"',
+                }
+                
+                resp = requests.get(api_url, headers=headers_api, timeout=10)
                 logger.info(f"📡 API Status: {resp.status_code}")
                 
                 if resp.status_code == 200:
                     data = resp.json()
+                    logger.info(f"📡 API Response keys: {list(data.keys())}")
                     
                     if data.get('data', {}).get('products'):
-                        product = data['data']['products'][0]
-                        title = product.get('name', '')
+                        products = data['data']['products']
+                        logger.info(f"📡 Found {len(products)} products in API response")
+                        
+                        product = products[0]
+                        logger.info(f"📡 Product keys: {list(product.keys())}")
+                        
+                        # Пробуем разные поля для названия
+                        title = (
+                            product.get('name') or 
+                            product.get('goodsName') or 
+                            product.get('title') or 
+                            product.get('brand', '') + ' ' + product.get('subject', '')
+                        ).strip()
                         
                         if title:
-                            logger.info(f"✅ Title from API: {title[:60]}...")
+                            logger.info(f"✅ Title from API v2: '{title[:60]}...'")
+                        else:
+                            logger.warning(f"⚠️ API v2 returned empty title")
+                            logger.warning(f"⚠️ Product data sample: {str(product)[:200]}")
                         
+                        # Получаем изображения
                         if 'photos' in product:
                             images_list = [p for p in product['photos'] if p]
-                            logger.info(f"📸 Found {len(images_list)} photos")
+                            logger.info(f"📸 Found {len(images_list)} photos in 'photos'")
                         elif 'media' in product and 'images' in product['media']:
                             raw = product['media']['images']
                             if isinstance(raw, list):
@@ -266,9 +295,39 @@ def get_marketplace_data(url: str):
                                             images_list.append(num)
                                     else:
                                         images_list.append(img)
-                            logger.info(f"📸 Found {len(images_list)} images")
+                            logger.info(f"📸 Found {len(images_list)} images in 'media.images'")
+                    else:
+                        logger.warning(f"⚠️ No products in API response")
+                        if 'data' in data:
+                            logger.warning(f"⚠️ Data keys: {list(data['data'].keys())}")
+                else:
+                    logger.warning(f"⚠️ API v2 returned status {resp.status_code}")
+                    
             except Exception as e:
-                logger.warning(f"⚠️ API v2 failed: {e}")
+                logger.warning(f"⚠️ API v2 failed: {type(e).__name__}: {e}")
+            
+            # Вариант 2: Альтернативный API endpoint (если v2 не дал название)
+            if not title:
+                try:
+                    api_v1_url = f"https://card.wb.ru/cards/detail?spp=30&regions=80,38,83,4,64,33,68,70,30,40,86,75,69,22,1,31,66,110,48,71,114&stores=117673,122258,122259,125238,125239,125240,6158,507,3158,117501,120602,120762,6159,204939,130744,159402,2737,130744,117986,1733,686,132043&curr=rub&dest=-1257786&nm={nm_id}"
+                    logger.info(f"📡 Trying alternative API...")
+                    
+                    resp_alt = requests.get(api_v1_url, headers=headers_api, timeout=10)
+                    
+                    if resp_alt.status_code == 200:
+                        data_alt = resp_alt.json()
+                        if data_alt.get('data', {}).get('products'):
+                            product_alt = data_alt['data']['products'][0]
+                            title = (
+                                product_alt.get('name') or 
+                                product_alt.get('goodsName') or 
+                                ''
+                            ).strip()
+                            
+                            if title:
+                                logger.info(f"✅ Title from alternative API: '{title[:60]}...'")
+                except Exception as e:
+                    logger.warning(f"⚠️ Alternative API failed: {e}")
             
             # Fallback для изображений
             if not images_list:
@@ -1108,6 +1167,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
