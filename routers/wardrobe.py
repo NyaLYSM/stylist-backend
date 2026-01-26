@@ -215,146 +215,79 @@ def extract_smart_title(full_title: str) -> str:
 
 def get_marketplace_data(url: str):
     """
-    Получает изображения и название товара с маркетплейсов.
-    🔥 ОБНОВЛЕНО: Использует WebAPI для получения точного количества фото,
-    чтобы избежать скачивания удаленных/чужих изображений.
+    Получает изображения и название товара.
+    Использует WebAPI для получения точного количества фото.
     """
-
-    logger.info("=" * 80)
-    logger.info(f"🌐 get_marketplace_data() called with URL: {url}")
-    logger.info("=" * 80)
+    logger.info(f"🌐 Processing URL: {url}")
     
     image_urls = []
     title = None
     
-    # WILDBERRIES
     if "wildberries" in url or "wb.ru" in url:
         try:
-            # Извлекаем ID товара
             match = re.search(r'catalog/(\d+)', url)
-            if not match:
-                logger.error("❌ Could not extract product ID")
-                return [], None
-                
+            if not match: return [], None
             nm_id = int(match.group(1))
-            logger.info(f"✅ Product ID: {nm_id}")
             
             vol = nm_id // 100000
             part = nm_id // 1000
             
-            images_list = []
-            exact_count_found = False
-
-            # ------------------------------------------------------------------
-            # 🚀 ВАРИАНТ 1: WebAPI (Самый надежный способ на 2026 год)
-            # Этот API используется самим сайтом WB, он возвращает точное число фото (pics)
-            # ------------------------------------------------------------------
+            # --- ШАГ 1: Попытка получить точное кол-во фото через WebAPI ---
+            exact_count = 0
             try:
-                # Этот URL редко меняется, так как он обслуживает фронтенд сайта
-                web_api_url = f"https://www.wildberries.ru/webapi/product/data?targetUrl=GP&lang=ru&curr=rub&dest=-1257786&nm={nm_id}"
-                logger.info(f"📡 Requesting WebAPI info...")
-                
-                # Важно: заголовки как у браузера
-                headers_web = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': '*/*',
-                    'Referer': url,
-                    'X-Requested-With': 'XMLHttpRequest'
+                # Имитируем запрос браузера к внутреннему API WB
+                web_url = f"https://www.wildberries.ru/webapi/product/data?nm={nm_id}"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "*/*",
+                    "X-Requested-With": "XMLHttpRequest"
                 }
-
-                resp = requests.get(web_api_url, headers=headers_web, timeout=8)
-                
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Путь к данным в ответе WebAPI
-                    if data.get('data') and data['data'].get('nomenclatures'):
-                        item_data = data['data']['nomenclatures'][0]
-                        
-                        # 1. Берем точное название
-                        if not title:
-                            title = item_data.get('imt_name') or item_data.get('subj_name')
-                            logger.info(f"✅ Title from WebAPI: '{title}'")
-                        
-                        # 2. Берем точное количество фото
-                        pics_count = item_data.get('pics')
-                        if pics_count:
-                            images_list = list(range(1, pics_count + 1))
-                            exact_count_found = True
-                            logger.info(f"📸 Exact photo count from API: {pics_count}")
-                            
+                res = requests.get(web_url, headers=headers, timeout=5)
+                if res.status_code == 200:
+                    data = res.json()
+                    # Достаем количество фото (поле pics)
+                    nom = data.get('data', {}).get('nomenclatures', [{}])[0]
+                    exact_count = nom.get('pics', 0)
+                    if not title:
+                        title = nom.get('imt_name') or nom.get('subj_name')
+                    logger.info(f"✅ WebAPI: found {exact_count} official photos")
             except Exception as e:
-                logger.warning(f"⚠️ WebAPI check failed: {e}")
+                logger.warning(f"⚠️ WebAPI failed, falling back to discovery: {e}")
 
-            # ------------------------------------------------------------------
-            # 🚀 FALLBACK: Если API не сработал, пробуем угадать (но осторожно)
-            # ------------------------------------------------------------------
-            if not images_list:
-                logger.warning("⚠️ Using fallback images range (1-10)")
-                # Ограничиваем до 10, чтобы уменьшить шанс поймать мусор
-                images_list = list(range(1, 11)) 
+            # --- ШАГ 2: Поиск рабочего сервера ---
+            base_url_found = find_wb_image_url(nm_id)
+            if not base_url_found:
+                return [], title
             
-            # НАХОДИМ РАБОЧИЙ СЕРВЕР (Используем вашу обновленную функцию find_wb_image_url)
-            first_image_url = find_wb_image_url(nm_id)
-            
-            if not first_image_url:
-                logger.error("❌ Could not find working server")
-                # Если сервер не найден - возвращаем пустой список, а не ошибку 500
-                return [], title if title else "Товар Wildberries"
-            
-            # Парсим хост из найденного URL
-            import urllib.parse
-            parsed = urllib.parse.urlparse(first_image_url)
-            working_host = parsed.netloc
-            logger.info(f"📦 Server determined: {working_host}")
-            
-            # СОБИРАЕМ ИТОГОВЫЙ СПИСОК URL
-            headers_img = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            for img_num in images_list:
-                # Формируем URL. webp предпочтительнее.
-                current_url = f"https://{working_host}/vol{vol}/part{part}/{nm_id}/images/big/{img_num}.webp"
-                
-                # Если мы точно знаем количество фото (exact_count_found), 
-                # то просто добавляем URL без лишних проверок (HEAD запросов), это быстрее.
-                if exact_count_found:
-                    image_urls.append(current_url)
-                else:
-                    # Если мы "гадаем", то проверяем, существует ли файл
-                    try:
-                        resp = requests.head(current_url, headers=headers_img, timeout=1.5)
-                        if resp.status_code == 200:
-                             # Проверка на "заглушку" (слишком маленький файл)
-                            cl = resp.headers.get('Content-Length')
-                            if cl and int(cl) > 5000: # > 5KB
-                                image_urls.append(current_url)
-                            else:
-                                logger.warning(f"⚠️ Skipped small image #{img_num}")
-                        elif resp.status_code == 404:
-                            # Если подряд 2 ошибки 404 при переборе — останавливаемся
-                            if img_num > 1: 
-                                break
-                    except:
-                        pass
+            # Извлекаем хост (например, basket-10.wbbasket.ru)
+            host = re.search(r'basket-\d+\.wbbasket\.ru', base_url_found).group(0)
 
-            # Получение названия со страницы (Fallback), если API не вернул
-            if not title or title == "Товар Wildberries":
-                 # ... (оставляем ваш существующий код парсинга HTML, если он там есть)
-                 pass
-
-            # Умная обработка названия
-            if title:
-                original_title = title
-                title = extract_smart_title(title)
-                logger.info(f"💡 Smart title: '{original_title[:30]}...' → '{title}'")
+            # --- ШАГ 3: Сбор ссылок ---
+            if exact_count > 0:
+                # Если знаем точное количество, просто генерируем ссылки
+                for i in range(1, exact_count + 1):
+                    image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
             else:
-                title = "Покупка"
+                # Если API промолчал, перебираем вручную, но ОСТАНАВЛИВАЕМСЯ на первой ошибке
+                logger.info("🔍 Discovering images manually...")
+                for i in range(1, 11): # Максимум 10
+                    test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp"
+                    try:
+                        # Проверяем только наличие файла (HEAD)
+                        r = requests.head(test_url, timeout=1.5)
+                        if r.status_code == 200:
+                            image_urls.append(test_url)
+                        else:
+                            # Ключевой момент: если фото #6 не найдено, мы не идем к #7
+                            logger.info(f"🛑 Stopped at photo {i} (404)")
+                            break
+                    except:
+                        break
 
-            return image_urls, title
+            return image_urls, title if title else "Товар Wildberries"
 
         except Exception as e:
-            logger.error(f"❌ WB error: {type(e).__name__}: {e}")
+            logger.error(f"❌ WB parsing error: {e}")
             return [], None
     
 
@@ -977,6 +910,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
