@@ -103,62 +103,63 @@ def validate_image_bytes(file_bytes: bytes):
 
 def find_wb_image_url(nm_id: int) -> str:
     """
-    Быстрый поиск изображений WB с расширенным списком серверов.
-    Оптимизировано количество потоков, чтобы не убивать память.
+    Поиск изображений WB.
+    🔥 ОБНОВЛЕНИЕ: Диапазон серверов увеличен до 70 для поддержки новых товаров.
     """
     vol = nm_id // 100000
     part = nm_id // 1000
     
-    # 1. Расширяем список серверов (WB уже использует basket-20+)
-    # basket-01 ... basket-25
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26)]
+    # 🔥 РАСШИРЕННЫЙ СПИСОК: от 01 до 70
+    # WB постоянно вводит новые сервера (basket-42, basket-50 и т.д.)
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 71)]
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'image/avif,image/webp,*/*',
+        'Referer': 'https://www.wildberries.ru/', # Важно для некоторых серверов
     }
 
     logger.info(f"🔍 Searching WB image for ID {nm_id} (vol={vol}, part={part})...")
 
-    # Проверяем только webp для скорости (jpg обычно есть там же, где webp)
+    # Шаблоны URL (сначала webp, так как он легче)
     url_templates = [
         "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp",
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg", # Fallback на jpg
     ]
 
     def check_url(url):
         try:
-            # timeout маленький, чтобы не висеть
-            resp = requests.head(url, headers=headers, timeout=1.0)
+            # Тайм-аут очень короткий (0.7с), чтобы быстро проскакивать неверные сервера
+            resp = requests.head(url, headers=headers, timeout=0.7)
             if resp.status_code == 200:
                 return url
         except Exception:
             pass
         return None
 
-    # 2. УМЕНЬШАЕМ количество потоков с 10 до 4, чтобы избежать OOM (Out Of Memory)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        all_urls = [
-            template.format(host=host, vol=vol, part=part, nm_id=nm_id)
-            for host in hosts
-            for template in url_templates
-        ]
+    # max_workers=6 — оптимальный баланс скорости и потребления памяти
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        all_urls = []
+        # Генерируем список URL. Сначала проверяем webp на всех серверах, потом jpg
+        for template in url_templates:
+            for host in hosts:
+                all_urls.append(template.format(host=host, vol=vol, part=part, nm_id=nm_id))
         
-        futures = {executor.submit(check_url, url): url for url in all_urls}
+        # Запускаем задачи
+        future_to_url = {executor.submit(check_url, url): url for url in all_urls}
         
         try:
-            for future in concurrent.futures.as_completed(futures, timeout=12):
+            for future in concurrent.futures.as_completed(future_to_url, timeout=15):
                 result = future.result()
                 if result:
-                    # Как только нашли - останавливаем остальные
+                    # Как только нашли рабочий URL — отменяем остальные и выходим
                     executor.shutdown(wait=False, cancel_futures=True)
-                    logger.info(f"✅ Image found at: {result[:60]}...")
-                    # Если нашли webp, возвращаем, но логика get_marketplace_data 
-                    # может сама менять расширение, поэтому возвращаем как есть
+                    logger.info(f"✅ Image found at: {result[:80]}...")
                     return result
         except Exception as e:
-            logger.error(f"⚠️ Error during parallel search: {e}")
+            logger.error(f"⚠️ Search error: {e}")
     
-    logger.warning(f"❌ Image not found for ID {nm_id} on checked hosts")
+    logger.warning(f"❌ Image not found for ID {nm_id} (Checked baskets 01-70)")
     return None
     
 def extract_smart_title(full_title: str) -> str:
@@ -286,7 +287,25 @@ def get_marketplace_data(url: str):
                             
             except Exception as e:
                 logger.warning(f"⚠️ API v1 failed: {e}")
-            
+                
+            # ВАРИАНТ 1.5: WebAPI (Используется сайтом, самый надежный на сегодня)    
+            if not title:
+                try:
+                    # Этот URL реже меняется
+                    web_api = f"https://www.wildberries.ru/webapi/product/data?targetUrl=GP&lang=ru&curr=rub&dest=-1257786&nm={nm_id}"
+                    logger.info(f"📡 Trying WebAPI: {web_api}")
+                    
+                    resp_web = requests.get(web_api, headers=headers_api, timeout=10)
+                    if resp_web.status_code == 200:
+                        data_web = resp_web.json()
+                        # Попытка достать данные из ответа WebAPI
+                        if data_web.get('data') and data_web['data'].get('nomenclatures'):
+                            item_data = data_web['data']['nomenclatures'][0]
+                            title = item_data.get('imt_name') or item_data.get('subj_name')
+                            logger.info(f"✅ Title from WebAPI: {title}")
+                except Exception as e:
+                    logger.warning(f"⚠️ WebAPI failed: {e}")
+                    
             # Вариант 2: Публичный API карточек (если v1 не сработал)
             if not title:
                 try:
@@ -1166,6 +1185,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
