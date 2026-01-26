@@ -103,60 +103,63 @@ def validate_image_bytes(file_bytes: bytes):
 
 def find_wb_image_url(nm_id: int) -> str:
     """
-    Улучшенный метод поиска изображений WB с расширенной диагностикой
+    Быстрый поиск изображений WB с параллельной проверкой серверов
     """
     vol = nm_id // 100000
     part = nm_id // 1000
     
-    # Расширенный список серверов (актуализировано на 2025)
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26)]
-    
-    # Добавляем альтернативные домены
-    hosts.extend([f"basket-{i:02d}.wb.ru" for i in range(1, 13)])
+    # Сокращенный список самых популярных серверов
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15]]
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-        'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'image/avif,image/webp,*/*',
     }
 
-    logger.info(f"🔍 Searching WB image for ID {nm_id} (vol={vol}, part={part}) on {len(hosts)} servers...")
+    logger.info(f"🔍 Searching WB image for ID {nm_id} (vol={vol}, part={part})...")
 
     # Пробуем разные варианты URL
     url_templates = [
-        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg",
         "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp",
-        "https://{host}/vol{vol}/part{part}/{nm_id}/images/c516x688/1.jpg",
+        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg",
     ]
 
-    for template in url_templates:
-        for host in hosts:
-            url = template.format(host=host, vol=vol, part=part, nm_id=nm_id)
-            try:
-                # Увеличенный timeout для Render.com (2 сек вместо 0.5)
-                resp = requests.head(url, headers=headers, timeout=2, allow_redirects=True)
-                
-                if resp.status_code == 200:
-                    logger.info(f"✅ Image FOUND at: {host} (template: {template.split('/')[-3]})")
-                    return url
-                    
-                # Логируем важные ошибки
-                if resp.status_code in [403, 429, 498]:
-                    logger.debug(f"⚠️ {host}: HTTP {resp.status_code}")
-                    
-            except requests.exceptions.Timeout:
-                logger.debug(f"⏱️ Timeout for {host}")
-                continue
-            except requests.exceptions.ConnectionError:
-                logger.debug(f"🔌 Connection error for {host}")
-                continue
-            except Exception as e:
-                logger.debug(f"❗ Error for {host}: {type(e).__name__}")
-                continue
-            
-    logger.warning(f"❌ Image not found on any WB server for ID {nm_id}")
-    return None
+    # Функция для проверки одного URL
+    def check_url(url):
+        try:
+            resp = requests.head(url, headers=headers, timeout=1.5, allow_redirects=True)
+            if resp.status_code == 200:
+                return url
+        except:
+            pass
+        return None
 
+    # Параллельная проверка серверов (намного быстрее!)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Создаем все возможные URL
+        all_urls = [
+            template.format(host=host, vol=vol, part=part, nm_id=nm_id)
+            for template in url_templates
+            for host in hosts
+        ]
+        
+        # Проверяем параллельно
+        futures = [executor.submit(check_url, url) for url in all_urls]
+        
+        # Возвращаем первый найденный
+        for future in concurrent.futures.as_completed(futures, timeout=10):
+            result = future.result()
+            if result:
+                # Отменяем оставшиеся задачи
+                for f in futures:
+                    f.cancel()
+                    
+                logger.info(f"✅ Image found at: {result[:60]}...")
+                return result
+    
+    logger.warning(f"❌ Image not found for ID {nm_id}")
+    return None
+    
 def extract_smart_title(full_title: str) -> str:
     """
     Извлекает ключевые слова из названия товара
@@ -1156,6 +1159,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
