@@ -103,13 +103,15 @@ def validate_image_bytes(file_bytes: bytes):
 
 def find_wb_image_url(nm_id: int) -> str:
     """
-    Быстрый поиск изображений WB с параллельной проверкой серверов
+    Быстрый поиск изображений WB с расширенным списком серверов.
+    Оптимизировано количество потоков, чтобы не убивать память.
     """
     vol = nm_id // 100000
     part = nm_id // 1000
     
-    # Сокращенный список самых популярных серверов
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15]]
+    # 1. Расширяем список серверов (WB уже использует basket-20+)
+    # basket-01 ... basket-25
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 26)]
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -118,46 +120,45 @@ def find_wb_image_url(nm_id: int) -> str:
 
     logger.info(f"🔍 Searching WB image for ID {nm_id} (vol={vol}, part={part})...")
 
-    # Пробуем разные варианты URL
+    # Проверяем только webp для скорости (jpg обычно есть там же, где webp)
     url_templates = [
         "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp",
-        "https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg",
     ]
 
-    # Функция для проверки одного URL
     def check_url(url):
         try:
-            resp = requests.head(url, headers=headers, timeout=1.5, allow_redirects=True)
+            # timeout маленький, чтобы не висеть
+            resp = requests.head(url, headers=headers, timeout=1.0)
             if resp.status_code == 200:
                 return url
-        except:
+        except Exception:
             pass
         return None
 
-    # Параллельная проверка серверов (намного быстрее!)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        # Создаем все возможные URL
+    # 2. УМЕНЬШАЕМ количество потоков с 10 до 4, чтобы избежать OOM (Out Of Memory)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         all_urls = [
             template.format(host=host, vol=vol, part=part, nm_id=nm_id)
-            for template in url_templates
             for host in hosts
+            for template in url_templates
         ]
         
-        # Проверяем параллельно
-        futures = [executor.submit(check_url, url) for url in all_urls]
+        futures = {executor.submit(check_url, url): url for url in all_urls}
         
-        # Возвращаем первый найденный
-        for future in concurrent.futures.as_completed(futures, timeout=10):
-            result = future.result()
-            if result:
-                # Отменяем оставшиеся задачи
-                for f in futures:
-                    f.cancel()
-                    
-                logger.info(f"✅ Image found at: {result[:60]}...")
-                return result
+        try:
+            for future in concurrent.futures.as_completed(futures, timeout=12):
+                result = future.result()
+                if result:
+                    # Как только нашли - останавливаем остальные
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    logger.info(f"✅ Image found at: {result[:60]}...")
+                    # Если нашли webp, возвращаем, но логика get_marketplace_data 
+                    # может сама менять расширение, поэтому возвращаем как есть
+                    return result
+        except Exception as e:
+            logger.error(f"⚠️ Error during parallel search: {e}")
     
-    logger.warning(f"❌ Image not found for ID {nm_id}")
+    logger.warning(f"❌ Image not found for ID {nm_id} on checked hosts")
     return None
     
 def extract_smart_title(full_title: str) -> str:
@@ -240,20 +241,26 @@ def get_marketplace_data(url: str):
                         # ПРОБУЕМ API (МНОЖЕСТВО ВАРИАНТОВ)
             images_list = []
             
-            # Вариант 1: Новый API endpoint (работает в 2025-2026)
+            # Вариант 1: Обновленный API endpoint (v2 вместо v1)
             try:
-                # Этот endpoint более стабильный
-                api_url = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-                logger.info(f"📡 Trying API v1: {api_url}")
+                # Пробуем v2, он часто надежнее для новых товаров
+                api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                logger.info(f"📡 Trying API v2: {api_url}")
                 
                 headers_api = {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'ru',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json',
                 }
                 
                 resp = requests.get(api_url, headers=headers_api, timeout=10)
-                logger.info(f"📡 API v1 Status: {resp.status_code}")
+                
+                # Если v2 упал, пробуем v1 (старый код)
+                if resp.status_code != 200:
+                    api_url_v1 = f"https://card.wb.ru/cards/v1/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+                    logger.info(f"📡 V2 failed, trying API v1: {api_url_v1}")
+                    resp = requests.get(api_url_v1, headers=headers_api, timeout=10)
+
+                logger.info(f"📡 API Status: {resp.status_code}")
                 
                 if resp.status_code == 200:
                     data = resp.json()
@@ -1159,6 +1166,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
