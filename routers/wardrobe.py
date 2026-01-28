@@ -33,16 +33,14 @@ CLIP_AVAILABLE = False
 IMAGE_PROCESSOR_AVAILABLE = False
 
 try:
-    from utils.clip_client import clip_generate_name, check_clip_service
+    from utils.clip_client import clip_check_clothing, rate_image_relevance
     CLIP_AVAILABLE = True
     logger.info("✅ CLIP client module loaded")
 except ImportError as e:
     logger.warning(f"⚠️ CLIP client not available: {e}")
-    # Заглушки
-    def clip_generate_name(image_url: str) -> dict:
-        return {"success": False, "name": "Покупка"}
-    def check_clip_service() -> bool:
-        return False
+    # Заглушка, чтобы код не падал
+    def rate_image_relevance(img, name): return 50.0
+    def clip_check_clothing(url): return {"ok": True}
 
 try:
     from utils.image_processor import generate_image_variants, convert_variant_to_bytes
@@ -743,51 +741,77 @@ async def add_marketplace_with_variants(
     # Список для хранения кандидатов: (score, index, url, image_bytes)
     candidates = []
 
-    # 2. Скачивание и анализ (последовательно или полу-параллельно)
+    # 2. Скачивание и анализ 
     for idx, img_url in enumerate(image_urls):
         try:
             logger.info(f"🧪 Analyzing image {idx+1}/{len(image_urls)}...")
             
-            # Скачиваем (быстро)
             file_bytes = await loop.run_in_executor(
                 None,
                 lambda url=img_url: download_image_bytes(url)
             )
             
-            # Открываем через PIL
             img = Image.open(BytesIO(file_bytes))
             
-            # 🔥 ВЫЧИСЛЯЕМ ОЦЕНКУ КАЧЕСТВА
-            quality_score = analyze_image_score(img, idx, len(image_urls))
+            # --- 1. ТЕХНИЧЕСКАЯ ЭВРИСТИКА (Ваш старый код) ---
+            # Оценивает качество, резкость, наличие текста (таблиц)
+            heuristic_score = analyze_image_score(img, idx, len(image_urls))
             
-            # Создаем маленькое превью для фронтенда сразу
+            # --- 2. СЕМАНТИЧЕСКАЯ ОЦЕНКА (CLIP) ---
+            clip_score = 0.0
+            
+            # Запускаем CLIP только если фото прошло минимальный порог эвристики (чтобы не грузить CPU мусором)
+            # Или если это первые фото (они важны)
+            if CLIP_AVAILABLE and (heuristic_score > 30 or idx < 2):
+                # Формируем простое название для CLIP (убираем лишние слова типа "купить")
+                clean_name = suggested_name.replace("Покупка", "clothing")
+                
+                # Вызываем нашу новую функцию
+                clip_score = await loop.run_in_executor(
+                    None,
+                    lambda: rate_image_relevance(img, clean_name)
+                )
+                
+                logger.info(f"🧠 CLIP Score for img {idx+1}: {clip_score:.1f}")
+            else:
+                clip_score = heuristic_score # Если CLIP недоступен, верим эвристике
+
+            # --- 3. ИТОГОВАЯ ФОРМУЛА ---
+            if CLIP_AVAILABLE:
+                # Баланс: 40% качество картинки + 60% соответствие смыслу
+                final_score = (heuristic_score * 0.4) + (clip_score * 0.6)
+                
+                # Дополнительный фильтр: если CLIP уверен, что это мусор (таблица/упаковка), убиваем рейтинг
+                if clip_score < 20:
+                    final_score = 10
+            else:
+                final_score = heuristic_score
+
+            # ... (дальше ваш код создания превью без изменений) ...
             preview_img = img.copy()
             preview_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
             
             preview_output = BytesIO()
-            # Конвертация если нужно (RGBA -> RGB)
             if preview_img.mode in ("RGBA", "P", "LA"):
-                preview_img = preview_img.convert("RGB")
-                
+                preview_img = preview_img.convert("RGB")     
             preview_img.save(preview_output, format='JPEG', quality=70)
             preview_bytes = preview_output.getvalue()
             
             candidates.append({
-                "score": quality_score,
+                "score": final_score,         # <-- ВАЖНО: используем final_score
+                "heuristic": heuristic_score, # Для отладки
+                "clip": clip_score,           # Для отладки
                 "original_url": img_url,
                 "preview_bytes": preview_bytes,
                 "original_idx": idx + 1
             })
             
             img.close()
-            logger.info(f"✅ Image {idx+1} scored: {quality_score}")
+            logger.info(f"✅ Image {idx+1} Final: {final_score:.1f} (H:{heuristic_score:.0f}, C:{clip_score:.1f})")
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to process variant {idx+1}: {e}")
             continue
-
-    if not candidates:
-        raise HTTPException(400, "Не удалось обработать изображения")
 
     # 3. СОРТИРОВКА И ОТБОР ЛУЧШИХ
     # Сортируем по убыванию оценки (лучшие сверху)
@@ -946,6 +970,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
