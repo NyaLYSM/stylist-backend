@@ -6,7 +6,7 @@ import re
 import logging
 from datetime import datetime
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageStat, ImageFilter
 
 # requests - для проверки доступности и скачивания
 import requests
@@ -100,6 +100,46 @@ def validate_image_bytes(file_bytes: bytes):
     except Exception:
         return False, "Файл не является фото."
     return True, None
+
+def analyze_image_score(img: Image.Image, index: int, total_images: int) -> float:
+    """
+    Оценивает пригодность изображения для гардероба (0-100).
+    Легковесная эвристика без нейросетей.
+    """
+    score = 100.0
+    
+    # 1. Штраф за позицию (чем дальше, тем хуже, кроме первых 2-х)
+    if index > 1:
+        score -= (index * 4)  # 3-е фото: -12, 10-е фото: -40
+    
+    # 2. Штраф для последних фото (часто таблицы размеров)
+    if index >= total_images - 2 and total_images > 4:
+        score -= 15
+
+    # Конвертируем в ч/б для анализа
+    gray = img.convert("L")
+    
+    # 3. Детектор таблиц и текста (Filter.FIND_EDGES)
+    # Таблицы имеют очень много резких границ
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    edge_stat = ImageStat.Stat(edges)
+    edge_density = edge_stat.mean[0]
+    
+    # Если слишком много линий (текст, таблица, сложная инфографика) -> штраф
+    if edge_density > 45: 
+        score -= 30
+        logger.info(f"📉 Image {index+1}: High edge density ({edge_density:.1f}) -> Likely text/table")
+        
+    # 4. Детектор "скучных" текстур (низкая вариативность)
+    # Если фото - просто кусок ткани, у него низкая дисперсия яркости
+    stat = ImageStat.Stat(gray)
+    std_dev = stat.stddev[0]
+    
+    if std_dev < 15:
+        score -= 25
+        logger.info(f"📉 Image {index+1}: Low detail ({std_dev:.1f}) -> Likely fabric texture")
+
+    return score
 
 def find_wb_image_url(nm_id: int) -> str:
     """
@@ -674,126 +714,122 @@ async def add_marketplace_with_variants(
     db: Session = Depends(get_db), 
     user_id: int = Depends(get_current_user_id)
 ):
-    """
-    Получает ВСЕ фотографии товара с маркетплейса
-    Возвращает превью для выбора лучшего варианта
-    """
     loop = asyncio.get_event_loop()
     
-    # 🔥 ДОБАВЬТЕ ЭТИ СТРОКИ:
-    logger.info(f"🚀 Starting variant processing")
-    logger.info(f"📍 URL: {payload.url}")
-    logger.info(f"👤 User: {user_id}")
+    logger.info(f"🚀 Starting smart variant processing for {payload.url}")
     
-    # 1. Получаем все изображения и название
-    logger.info(f"🔍 Fetching marketplace images...")
+    # 1. Получаем ссылки (используем нашу новую умную функцию с WebAPI)
     image_urls, full_title = await loop.run_in_executor(
         None, 
         lambda: get_marketplace_data(payload.url)
     )
     
-    # 🔥 ОТЛАДКА
-    logger.info(f"🎯 Returned from get_marketplace_data:")
-    logger.info(f"   - Images: {len(image_urls)} found")
-    logger.info(f"   - Title: '{full_title}'")
-    
     if not image_urls:
-        raise HTTPException(
-            400, 
-            "Не удалось найти изображения товара. "
-            "Попробуйте скопировать прямую ссылку на фото."
-        )
+        raise HTTPException(400, "Изображения не найдены")
+
+    # Ограничиваем входной поток, чтобы не грузить сервер, 
+    # но берем достаточно (8), чтобы было из чего выбрать
+    image_urls = image_urls[:8] 
     
-    logger.info(f"✅ Found {len(image_urls)} images")
-    
-    # 2. Умное извлечение названия
     if payload.name:
         suggested_name = payload.name
     elif full_title:
         suggested_name = extract_smart_title(full_title)
-        logger.info(f"💡 Smart title extracted: '{suggested_name}' from '{full_title}'")
     else:
         suggested_name = "Покупка"
-    
-    # 3. Скачиваем и создаём превью для каждого изображения
+
     temp_id = uuid.uuid4().hex
-    variant_previews = {}
-    variant_full_urls = {}  # Храним оригинальные URL
     
-    # Ограничиваем до 10 изображений
-    image_urls = image_urls[:10]
-    
+    # Список для хранения кандидатов: (score, index, url, image_bytes)
+    candidates = []
+
+    # 2. Скачивание и анализ (последовательно или полу-параллельно)
     for idx, img_url in enumerate(image_urls):
-        variant_key = f"variant_{idx + 1}"
-        
         try:
-            # 🔥 ДОБАВЛЕНО ЛОГИРОВАНИЕ
-            logger.info(f"📥 [{idx+1}/{len(image_urls)}] Processing: {img_url[:80]}...")
-            start_time = time.time()
+            logger.info(f"🧪 Analyzing image {idx+1}/{len(image_urls)}...")
             
-            # Скачиваем изображение
+            # Скачиваем (быстро)
             file_bytes = await loop.run_in_executor(
                 None,
                 lambda url=img_url: download_image_bytes(url)
             )
             
-            download_time = time.time() - start_time
-            logger.info(f"⏱️ Downloaded in {download_time:.2f}s")
-            
-            # Валидация
-            valid, error = validate_image_bytes(file_bytes)
-            if not valid:
-                logger.warning(f"⚠️ Image {idx+1} invalid: {error}")
-                continue
-            
-            # Создаём превью (300x300)
+            # Открываем через PIL
             img = Image.open(BytesIO(file_bytes))
             
-            # Превью
+            # 🔥 ВЫЧИСЛЯЕМ ОЦЕНКУ КАЧЕСТВА
+            quality_score = analyze_image_score(img, idx, len(image_urls))
+            
+            # Создаем маленькое превью для фронтенда сразу
             preview_img = img.copy()
             preview_img.thumbnail((300, 300), Image.Resampling.LANCZOS)
             
-            # Конвертируем в bytes
             preview_output = BytesIO()
+            # Конвертация если нужно (RGBA -> RGB)
             if preview_img.mode in ("RGBA", "P", "LA"):
-                preview_rgb = Image.new("RGB", preview_img.size, (255, 255, 255))
-                if preview_img.mode in ("RGBA", "LA"):
-                    preview_rgb.paste(preview_img, mask=preview_img.split()[-1])
-                else:
-                    preview_rgb.paste(preview_img)
-                preview_img = preview_rgb
-            
-            preview_img.save(preview_output, format='JPEG', quality=70, optimize=True)
+                preview_img = preview_img.convert("RGB")
+                
+            preview_img.save(preview_output, format='JPEG', quality=70)
             preview_bytes = preview_output.getvalue()
             
-            # Сохраняем превью
-            preview_filename = f"preview_{temp_id}_{variant_key}.jpg"
-            preview_url = save_image(preview_filename, preview_bytes)
-            
-            variant_previews[variant_key] = preview_url
-            variant_full_urls[variant_key] = img_url
+            candidates.append({
+                "score": quality_score,
+                "original_url": img_url,
+                "preview_bytes": preview_bytes,
+                "original_idx": idx + 1
+            })
             
             img.close()
-            
-            logger.info(f"✅ Preview {idx+1} created ({len(preview_bytes)/1024:.1f}KB)")
+            logger.info(f"✅ Image {idx+1} scored: {quality_score}")
             
         except Exception as e:
-            logger.warning(f"⚠️ Failed to process image {idx+1}: {type(e).__name__}: {e}")
+            logger.warning(f"⚠️ Failed to process variant {idx+1}: {e}")
             continue
+
+    if not candidates:
+        raise HTTPException(400, "Не удалось обработать изображения")
+
+    # 3. СОРТИРОВКА И ОТБОР ЛУЧШИХ
+    # Сортируем по убыванию оценки (лучшие сверху)
+    candidates.sort(key=lambda x: x["score"], reverse=True)
     
-    if not variant_previews:
-        raise HTTPException(400, "Не удалось обработать ни одного изображения")
+    # Берем ТОП-4 (или меньше, если всего мало)
+    top_candidates = candidates[:4]
     
-    # 4. Сохраняем во временное хранилище
+    # Если первое фото (обложка WB) выпало из топа из-за эвристики, 
+    # принудительно возвращаем его на 1 место, если оно было скачано.
+    # Это страховка, так как 1-е фото на WB в 99% случаев самое важное.
+    first_img = next((c for c in candidates if c["original_idx"] == 1), None)
+    if first_img and first_img not in top_candidates:
+        top_candidates.pop() # Убираем худшего из топа
+        top_candidates.insert(0, first_img) # Вставляем 1-е фото в начало
+        
+    # Сортируем топ-4 обратно по их оригинальному порядку, чтобы сохранить логику "поворота" модели
+    top_candidates.sort(key=lambda x: x["original_idx"])
+
+    # 4. Сохранение превью и подготовка ответа
+    variant_previews = {}
+    variant_full_urls = {}
+    
+    for cand in top_candidates:
+        variant_key = f"variant_{cand['original_idx']}"
+        
+        # Сохраняем превью на диск/s3
+        preview_filename = f"preview_{temp_id}_{variant_key}.jpg"
+        preview_url = save_image(preview_filename, cand["preview_bytes"])
+        
+        variant_previews[variant_key] = preview_url
+        variant_full_urls[variant_key] = cand["original_url"]
+
+    # Сохраняем во временное хранилище
     VARIANTS_STORAGE[temp_id] = {
-        "image_urls": variant_full_urls,  # Оригинальные URL для скачивания
+        "image_urls": variant_full_urls,
         "user_id": user_id,
         "created_at": datetime.utcnow(),
         "previews": variant_previews,
         "source_url": payload.url
     }
     
-    # Очистка старых
     cleanup_old_variants()
     
     return {
@@ -801,7 +837,7 @@ async def add_marketplace_with_variants(
         "suggested_name": suggested_name,
         "variants": variant_previews,
         "total_images": len(variant_previews),
-        "message": "Выберите лучшее фото товара"
+        "message": "Выберите лучшее фото (отобраны самые подходящие)"
     }
 
 @router.post("/select-variant", response_model=ItemResponse)
@@ -910,6 +946,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
