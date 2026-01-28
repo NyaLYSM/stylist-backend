@@ -10,6 +10,7 @@ import requests
 from io import BytesIO
 import uvicorn
 import logging
+from fastapi import UploadFile, File, Form
 
 # Импортируем CLIP
 try:
@@ -268,6 +269,49 @@ def health_check():
         "model_loaded": MODEL is not None,
         "device": str(DEVICE) if DEVICE else "unknown"
     }
+
+@app.post("/rate")
+async def rate_image_endpoint(file: UploadFile = File(...), text: str = Form(...)):
+    """
+    Оценивает, насколько изображение соответствует названию товара
+    и не является ли оно таблицей размеров или мусором.
+    """
+    try:
+        # Читаем файл, который прислал бот
+        image_data = await file.read()
+        image = Image.open(BytesIO(image_data)).convert("RGB")
+        
+        # Список для сравнения: 
+        # 1. То, что мы ищем (название товара)
+        # 2. Таблица размеров (мусор)
+        # 3. Текстура ткани (мусор)
+        # 4. Упаковка/коробка (мусор)
+        search_query = f"a photo of {text}"
+        negative_queries = [
+            "a size chart table with numbers",
+            "fabric texture close up",
+            "cardboard packaging box"
+        ]
+        
+        all_categories = [search_query] + negative_queries
+        
+        # Используем существующую в файле функцию классификации
+        # Внимание: для точности лучше использовать английский для технических промптов
+        results = classify_with_clip(image, all_categories, language="en")
+        
+        # Ищем, какой балл получил наш основной запрос
+        main_score = 0
+        for res in results:
+            if res["category"] == search_query:
+                main_score = res["confidence"] * 100
+                break
+        
+        # Если победил мусор (таблица размеров), основной score будет очень низким
+        return {"score": main_score}
+        
+    except Exception as e:
+        logger.error(f"Error in rate-endpoint: {e}")
+        return {"score": 50.0, "error": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8001, log_level="info")
