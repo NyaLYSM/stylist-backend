@@ -36,11 +36,9 @@ try:
     from utils.clip_client import clip_check_clothing, rate_image_relevance
     CLIP_AVAILABLE = True
     logger.info("✅ CLIP client module loaded")
-except ImportError as e:
-    logger.warning(f"⚠️ CLIP client not available: {e}")
-    # Заглушка, чтобы код не падал
+except ImportError:
+    CLIP_AVAILABLE = False
     def rate_image_relevance(img, name): return 50.0
-    def clip_check_clothing(url): return {"ok": True}
 
 try:
     from utils.image_processor import generate_image_variants, convert_variant_to_bytes
@@ -970,6 +968,7 @@ async def select_and_save_variant(
     logger.info(f"✅ Item saved: id={item.id}")
     
     return item
+
 
 
 
