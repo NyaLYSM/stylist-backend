@@ -39,3 +39,4 @@ def clip_check_clothing(image_url: str) -> dict:
         return r.json()
     except:
         return {"ok": True}
+
