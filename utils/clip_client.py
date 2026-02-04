@@ -40,3 +40,4 @@ def clip_check_clothing(image_url: str) -> dict:
     except:
         return {"ok": True}
 
+
