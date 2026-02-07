@@ -21,7 +21,7 @@ def rate_image_relevance(image, product_name: str) -> float:
 
         # Мы стучимся в эндпоинт /rate (его нужно будет добавить в контейнер, см. ниже)
         # Если в контейнере пока только старый код, этот запрос выдаст 404
-        response = requests.post(f"{CLIP_URL}/rate", files=files, data=data, timeout=15)
+        response = requests.post(f"{CLIP_URL}/rate", files=files, data=data, timeout=60)
         
         if response.status_code == 200:
             return float(response.json().get("score", 50.0))
@@ -39,5 +39,6 @@ def clip_check_clothing(image_url: str) -> dict:
         return r.json()
     except:
         return {"ok": True}
+
 
 
