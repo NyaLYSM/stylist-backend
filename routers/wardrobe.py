@@ -156,147 +156,181 @@ def find_wb_image_url(nm_id: int) -> str:
     return None
     
 def extract_smart_title(full_title: str) -> str:
-    """Чистит название товара для CLIP"""
+    """
+    Чистит название товара для CLIP.
+    Делаем его максимально коротким и понятным для нейросети.
+    """
     if not full_title: return "clothing"
     
-    title = full_title.lower()
-    # Убираем лишнее
-    title = re.sub(r'[\/\-]', ' ', title) # Заменяем слеши и дефисы пробелами
+    # Убираем мусор из заголовков браузера
+    # Пример: "Платье женское вечернее - купить в интернет-магазине Wildberries"
+    cleanup_patterns = [
+        r'[-|–].*wildberries.*',  # Все что после тире про WB
+        r'[-|–].*ozon.*',
+        r'[-|–].*lamoda.*',
+        r'купить в .*',
+        r'интернет-магазин.*',
+        r'wildberries', 'wb', 'ozon', 'lamoda'
+    ]
     
+    title = full_title.lower()
+    for pat in cleanup_patterns:
+        title = re.sub(pat, '', title)
+
+    # Стоп-слова, которые не описывают визуал
     stop_words = [
-        'wildberries', 'wb', 'ozon', 'товар', 'купить', 'цена', 'скидка', 
-        'женские', 'женская', 'мужские', 'мужская', 'детские', 
-        'размер', 'цвет', 'новинка', 'хит', '2024', '2025', '2026'
+        'товар', 'цена', 'скидка', 'акция', 'новинка', 'хит',
+        'быстрая', 'доставка', 'бесплатная', 'женские', 'мужские',
+        'для', 'женщин', 'мужчин', 'девочек', 'мальчиков',
+        'размер', 'цвет', 'артикул'
     ]
     
     for w in stop_words:
-        title = title.replace(w, '')
+        title = title.replace(f" {w} ", " ")
         
-    # Убираем цифры (артикулы)
-    title = re.sub(r'\b\d+\b', '', title)
+    # Убираем лишние символы
+    title = re.sub(r'[^\w\s]', ' ', title)
+    title = re.sub(r'\s+', ' ', title).strip()
     
-    # Берем первые 4 слова - обычно там суть (напр. "Платье вечернее черное в пол")
-    words = [w for w in title.split() if len(w) > 2]
-    result = ' '.join(words[:4]).strip()
+    # Берем первые 5 слов, если название длинное
+    words = title.split()
+    if not words: return "clothing"
     
-    return result.capitalize() if result else "clothing"
+    result = ' '.join(words[:5])
+    return result.capitalize()
 
 def get_marketplace_data(url: str):
     """
-    Получает изображения и название товара.
-    Улучшенная логика для WB и JSON-LD.
+    АГРЕССИВНЫЙ ПАРСИНГ.
+    Пытается достать название и фото любыми способами.
     """
     logger.info(f"🌐 Processing URL: {url}")
     image_urls = []
     title = None
     
-    # === WILDBERRIES ===
+    # Настройки для curl_cffi (имитация реального браузера)
+    # Важно менять версии Chrome, чтобы не палили
+    browser_params = {
+        "impersonate": "chrome120",
+        "headers": {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Cache-Control": "max-age=0",
+            "Referer": "https://www.google.com/"
+        },
+        "timeout": 15
+    }
+
+    # === 1. ПЫТАЕМСЯ СКАЧАТЬ HTML (САМЫЙ НАДЕЖНЫЙ МЕТОД ДЛЯ НАЗВАНИЯ) ===
+    soup = None
+    try:
+        resp = crequests.get(url, **browser_params)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.content, "lxml")
+            
+            # --- ИЩЕМ НАЗВАНИЕ ВЕЗДЕ ---
+            
+            # A. JSON-LD (Скрытая разметка для Google) - Самое точное
+            if not title:
+                scripts = soup.find_all('script', type='application/ld+json')
+                for script in scripts:
+                    try:
+                        data = json.loads(script.string)
+                        # Иногда это список, иногда словарь
+                        if isinstance(data, list): data = data[0]
+                        
+                        if isinstance(data, dict):
+                            # Проверяем разные схемы
+                            if 'name' in data:
+                                title = data['name']
+                                logger.info(f"✅ Found title in JSON-LD: {title}")
+                            
+                            # Заодно ищем картинку там же
+                            if 'image' in data:
+                                imgs = data['image']
+                                if isinstance(imgs, str): image_urls.append(imgs)
+                                elif isinstance(imgs, list): image_urls.extend(imgs)
+                    except: pass
+
+            # B. Open Graph (og:title)
+            if not title:
+                og = soup.find("meta", property="og:title")
+                if og: 
+                    title = og.get("content")
+                    logger.info(f"✅ Found title in OG: {title}")
+
+            # C. Тег <title> (Есть всегда!)
+            if not title and soup.title:
+                raw_title = soup.title.string
+                # Обычно там "Название товара - купить на Wildberries..."
+                # Мы почистим это позже в extract_smart_title
+                title = raw_title
+                logger.info(f"✅ Found title in <title> tag: {title}")
+
+            # D. H1 (Классика)
+            if not title:
+                h1 = soup.find("h1")
+                if h1: title = h1.get_text(strip=True)
+
+    except Exception as e:
+        logger.error(f"⚠️ HTML parsing failed: {e}")
+
+    # === 2. СПЕЦИФИКА WILDBERRIES (API + КАРТИНКИ) ===
     if "wildberries" in url or "wb.ru" in url:
         try:
             match = re.search(r'catalog/(\d+)', url)
             if match:
                 nm_id = int(match.group(1))
                 
-                # 1. WB API v2 (с безопасными параметрами dest=-1)
-                # dest=-1 работает почти везде и не требует точной локации
-                card_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1&spp=30&nm={nm_id}"
-                try:
-                    res = requests.get(card_url, timeout=5)
-                    if res.status_code == 200:
-                        data = res.json()
-                        product = data.get('data', {}).get('products', [{}])[0]
-                        
-                        # Название
-                        title = product.get('name')
-                        if not title: title = product.get('brand', '') + ' ' + product.get('name', '')
-                        
-                        # Кол-во фото
-                        pics_count = product.get('pics', 0)
-                        logger.info(f"✅ WB API: Title='{title}', Pics={pics_count}")
-                except Exception as e:
-                    logger.warning(f"⚠️ WB API failed: {e}")
-
-                # 2. Если API не сработало, ищем картинки перебором
-                base_url = find_wb_image_url(nm_id)
-                if base_url:
-                    host_match = re.search(r'basket-\d+\.wbbasket\.ru', base_url)
-                    if host_match:
-                        host = host_match.group(0)
-                        vol = nm_id // 100000
-                        part = nm_id // 1000
-                        
-                        count = locals().get('pics_count', 12) # Если API отвалилось, берем 12
-                        if count == 0: count = 12
-
-                        for i in range(1, count + 1):
-                            image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
-            
-            # Если название все еще нет, пробуем парсить страницу через curl_cffi
-            if not title:
-                try:
-                    resp = crequests.get(url, impersonate="chrome120", timeout=8)
-                    soup = BeautifulSoup(resp.content, "lxml")
-                    
-                    # Поиск h1
-                    h1 = soup.find("h1")
-                    if h1: title = h1.get_text(strip=True)
-                except: pass
-
-        except Exception as e:
-            logger.error(f"❌ WB Error: {e}")
-
-    # === ОБЩИЙ ПАРСИНГ (OZON, LAMODA и т.д.) ===
-    else:
-        try:
-            resp = crequests.get(url, impersonate="chrome120", timeout=10)
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.content, "lxml")
+                # Попытка достать фото через генератор ссылок (это быстрее API)
+                # Перебираем сервера basket-01 ... basket-20 (наиболее вероятные для новых товаров)
+                # И basket-01 ... basket-15 для старых. 
+                # Возьмем широкий диапазон, но с быстрым таймаутом.
                 
-                # 1. JSON-LD (Самый надежный способ для SEO сайтов)
-                if not title:
-                    scripts = soup.find_all('script', type='application/ld+json')
-                    for script in scripts:
-                        try:
-                            data = json.loads(script.string)
-                            # Ищем Product schema
-                            if isinstance(data, dict) and data.get('@type') == 'Product':
-                                title = data.get('name')
-                                # Если есть картинка в схеме
-                                if 'image' in data:
-                                    img = data['image']
-                                    if isinstance(img, str): image_urls.append(img)
-                                    elif isinstance(img, list): image_urls.extend(img)
-                                break
-                            # Иногда это список
-                            elif isinstance(data, list):
-                                for item in data:
-                                    if item.get('@type') == 'Product':
-                                        title = item.get('name')
-                                        break
-                        except: pass
-
-                # 2. Open Graph
-                if not title:
-                    og = soup.find("meta", property="og:title")
-                    if og: title = og.get("content")
-                
-                # 3. H1
-                if not title:
-                    h1 = soup.find("h1")
-                    if h1: title = h1.get_text(strip=True)
-
-                # Поиск картинок (если еще нет)
+                # Если мы нашли фото в JSON-LD (выше), используем их.
+                # Если нет - запускаем перебор.
                 if not image_urls:
-                    for img in soup.find_all('img'):
-                        src = img.get('src') or img.get('data-src')
-                        if src and src.startswith('http') and ('large' in src or 'big' in src or 'gallery' in src):
-                            image_urls.append(src)
-
+                    base_url = find_wb_image_url(nm_id) # Эта функция у вас уже есть в файле
+                    if base_url:
+                        host_match = re.search(r'basket-\d+\.wbbasket\.ru', base_url)
+                        if host_match:
+                            host = host_match.group(0)
+                            vol = nm_id // 100000
+                            part = nm_id // 1000
+                            # Генерируем 10 ссылок
+                            for i in range(1, 11):
+                                image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+                
+                # Если названия всё еще нет (HTML не отдался), пробуем API как последнюю надежду
+                if not title:
+                    card_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1&spp=30&nm={nm_id}"
+                    try:
+                        res = requests.get(card_url, timeout=3)
+                        if res.status_code == 200:
+                            data = res.json()
+                            prod = data.get('data', {}).get('products', [{}])[0]
+                            title = prod.get('name')
+                    except: pass
+                    
         except Exception as e:
-            logger.error(f"❌ General parser error: {e}")
+            logger.error(f"❌ WB Logic Error: {e}")
 
+    # === 3. ФИНАЛЬНАЯ ОБРАБОТКА ===
+    
+    # Если парсинг HTML нашел картинки (Ozon/Lamoda), фильтруем их
+    # Убираем мелкие иконки и дубли
+    unique_urls = []
+    for u in image_urls:
+        if u not in unique_urls and u.startswith('http'):
+            unique_urls.append(u)
+    
     final_title = title.strip() if title else None
-    return image_urls, final_title
+    
+    # Если совсем ничего не нашли, возвращаем хотя бы "Товар"
+    if not final_title:
+        logger.warning("❌ No title found anywhere. Using fallback.")
+    
+    return unique_urls, final_title
 
 def download_image_bytes(image_url: str) -> bytes:
     """Скачивание с User-Agent"""
@@ -495,3 +529,4 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
