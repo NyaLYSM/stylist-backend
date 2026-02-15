@@ -148,9 +148,9 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     
     if not nm_id: return [], None
 
-    # 2. Стратегия A: Mobile API (Меньше банов)
+    # 2. Стратегия A: Mobile API
     try:
-        # Используем endpoint, который реже блокируют
+        # Используем card.wb.ru
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
@@ -162,35 +162,37 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
             if products:
                 prod = products[0]
                 title = prod.get('name')
-                # Генерация ссылок на фото
-                # (Логика basket-01...basket-X)
-                # Для надежности используем перебор серверов, так как API иногда врет про хост
+                
+                # Генерация ссылок (basket-01 ... basket-75)
+                # РАСШИРЯЕМ ДИАПАЗОН ОБРАТНО, иначе новые товары не найдутся!
                 vol = nm_id // 100000
                 part = nm_id // 1000
-                hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 25)] # Топ-25 серверов
+                hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 76)] 
                 
-                # Пытаемся найти рабочий хост
+                # Быстрый поиск рабочего хоста (Head request)
                 found_host = None
-                for h in hosts:
+                
+                # Пробуем сначала последние сервера (там чаще новые товары)
+                for h in reversed(hosts):
                     test_url = f"https://{h}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
                     try:
-                        if requests.head(test_url, timeout=0.3).status_code == 200:
+                        # Очень короткий таймаут, чтобы быстро перебирать
+                        if requests.head(test_url, timeout=0.2).status_code == 200:
                             found_host = h
                             break
                     except: continue
                 
                 if found_host:
-                    # Генерируем 10 ссылок, если нашли хост
-                    for i in range(1, 11):
+                    # Если нашли хост, генерируем ссылки
+                    for i in range(1, 15):
                         image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
-                
-                logger.info("✅ WB API Strategy success")
-                return image_urls, title
+                    
+                    logger.info(f"✅ WB Strategy Success: Host={found_host}")
+                    return image_urls, title
     except Exception as e:
         logger.warning(f"⚠️ WB API Strategy failed: {e}")
 
-    # 3. Стратегия B: JSON-LD через curl_cffi (Если API забанили)
-    # Используем Generic парсер, так как WB поддерживает JSON-LD
+    # 3. Fallback
     return parse_generic_json_ld(url, logger)
 
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
@@ -267,7 +269,7 @@ def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
 
 # --- MAIN CONTROLLER ---
 
-async def get_marketplace_data(url: str):
+def get_marketplace_data(url: str):
     """Маршрутизатор: выбирает правильный парсер для ссылки"""
     logger.info(f"🌐 Processing URL: {url}")
     
@@ -275,18 +277,12 @@ async def get_marketplace_data(url: str):
         return parse_wildberries(url, logger)
     
     elif "ozon" in url:
-        # Ozon очень сложный, но JSON-LD часто срабатывает
         return parse_generic_json_ld(url, logger)
         
     elif "lamoda" in url:
         return parse_generic_json_ld(url, logger)
         
-    elif "aliexpress" in url:
-        # Для Али нужен специфичный подход, но пока пробуем общий
-        return parse_generic_json_ld(url, logger)
-        
     else:
-        # Любой другой магазин
         return parse_generic_json_ld(url, logger)
 
 def download_image_bytes(image_url: str) -> bytes:
@@ -313,22 +309,24 @@ async def add_marketplace_with_variants(
 ):
     loop = asyncio.get_event_loop()
     
-    # 1. Запуск парсера
-    image_urls, full_title = await loop.run_in_executor(
-        None, 
-        lambda: asyncio.run(get_marketplace_data(payload.url)) if asyncio.iscoroutinefunction(get_marketplace_data) else parse_wildberries(payload.url, logger) if "wildberries" in payload.url else parse_generic_json_ld(payload.url, logger)
-    )
-    
-    # Небольшой хак для запуска синхронных функций в executor, если get_marketplace_data не async
-    # Но лучше сделать просто вызов функции
-    # В этой версии я сделал get_marketplace_data async, но внутри он вызывает sync функции.
-    # Для простоты:
-    image_urls, full_title = await get_marketplace_data(payload.url)
+    # === ИСПРАВЛЕНИЕ: Запускаем синхронный парсер в отдельном потоке ===
+    # Это предотвращает блокировку сервера и исправляет ошибку вызова
+    try:
+        image_urls, full_title = await loop.run_in_executor(
+            None, 
+            lambda: get_marketplace_data(payload.url)
+        )
+    except Exception as e:
+        logger.error(f"❌ Parser crashed: {e}")
+        raise HTTPException(400, f"Ошибка при чтении ссылки: {str(e)}")
 
     if not image_urls:
-        raise HTTPException(400, "Не удалось найти изображения. Попробуйте загрузить фото вручную.")
+        logger.warning(f"❌ No images found for {payload.url}")
+        raise HTTPException(400, "Не удалось найти изображения. Попробуйте обновить страницу товара или загрузить фото вручную.")
 
-    # 2. Подготовка Prompt для CLIP
+    # ... Дальше код без изменений ...
+    
+    # Подготовка Prompt для CLIP
     raw_name = payload.name if payload.name else (full_title if full_title else "clothing")
     clip_prompt = extract_smart_title(raw_name)
     
@@ -338,7 +336,6 @@ async def add_marketplace_with_variants(
     temp_id = uuid.uuid4().hex
     candidates = []
     
-    # Ограничиваем кол-во для обработки
     process_urls = image_urls[:10]
     
     for idx, img_url in enumerate(process_urls):
@@ -346,7 +343,7 @@ async def add_marketplace_with_variants(
             file_bytes = await loop.run_in_executor(None, lambda: download_image_bytes(img_url))
             if not file_bytes: continue
             
-            # Конвертация в RGB (лечим RGBA ошибку)
+            # Конвертация в RGB
             img = Image.open(BytesIO(file_bytes))
             if img.mode != 'RGB':
                 bg = Image.new("RGB", img.size, (255, 255, 255))
@@ -356,20 +353,17 @@ async def add_marketplace_with_variants(
                     bg.paste(img)
                 img = bg
 
-            # Оценка
             heuristic_score = analyze_image_score(img, idx, len(process_urls))
             
             clip_score = 0.0
-            if CLIP_AVAILABLE and heuristic_score > 20: # Экономим ресурсы нейросети
+            if CLIP_AVAILABLE and heuristic_score > 20: 
                 clip_score = await loop.run_in_executor(
                     None,
                     lambda: rate_image_relevance(img, clip_prompt)
                 )
             
-            # Финальный балл (CLIP важнее)
             final_score = (heuristic_score * 0.3) + (clip_score * 0.7)
             
-            # Превью
             preview_img = img.copy()
             preview_img.thumbnail((400, 400))
             out = BytesIO()
@@ -387,10 +381,10 @@ async def add_marketplace_with_variants(
         except Exception as e:
             logger.warning(f"Skipping img {idx}: {e}")
 
-    # 4. Сортировка и сохранение
+    # Сортировка и сохранение
     candidates.sort(key=lambda x: x["score"], reverse=True)
     top_candidates = candidates[:4]
-    top_candidates.sort(key=lambda x: x["original_idx"]) # Возвращаем хронологию для топа
+    top_candidates.sort(key=lambda x: x["original_idx"])
     
     variant_previews = {}
     variant_full_urls = {}
@@ -402,6 +396,9 @@ async def add_marketplace_with_variants(
         
         variant_previews[v_key] = url
         variant_full_urls[v_key] = cand['original_url']
+
+    if not variant_previews:
+         raise HTTPException(400, "Не удалось обработать изображения (возможно, защита сайта).")
 
     VARIANTS_STORAGE[temp_id] = {
         "image_urls": variant_full_urls,
@@ -479,3 +476,4 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
