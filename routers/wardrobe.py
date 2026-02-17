@@ -121,55 +121,89 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 # --- MARKETPLACE PARSERS (SYNCHRONOUS) ---
 
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
-    """Специализированный парсер для WB (Синхронный)"""
+    """
+    Специализированный парсер для WB.
+    Версия 3.0: Поддержка новых серверов (basket-01 ... basket-150) + Многопоточный поиск.
+    """
     image_urls = []
     title = None
     nm_id = None
     
+    # 1. Извлекаем ID
     match = re.search(r'catalog/(\d+)', url)
     if match: nm_id = int(match.group(1))
     
     if not nm_id: return [], None
 
-    # 1. Mobile API
+    # Рассчитываем параметры vol и part
+    vol = nm_id // 100000
+    part = nm_id // 1000
+
+    # === ПОПЫТКА 1: Mobile API (быстро, есть название) ===
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            "Accept": "*/*"
         }
-        resp = requests.get(api_url, headers=headers, timeout=5)
+        resp = requests.get(api_url, headers=headers, timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get('data', {}).get('products', [])
             if products:
                 prod = products[0]
                 title = prod.get('name')
-                
-                # Генерация ссылок (basket-01 ... basket-75)
-                vol = nm_id // 100000
-                part = nm_id // 1000
-                hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 76)]
-                
-                found_host = None
-                # Ищем рабочий хост (с конца, там новее)
-                for h in reversed(hosts):
-                    test_url = f"https://{h}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
-                    try:
-                        if requests.head(test_url, timeout=0.2).status_code == 200:
-                            found_host = h
-                            break
-                    except: continue
-                
-                if found_host:
-                    for i in range(1, 15):
-                        image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
-                    
-                    logger.info(f"✅ WB Strategy Success: Host={found_host}")
-                    return image_urls, title
+                logger.info(f"✅ WB API Found Title: {title}")
     except Exception as e:
-        logger.warning(f"⚠️ WB API Strategy failed: {e}")
+        logger.warning(f"⚠️ WB API Title fetch failed: {e}")
 
-    # 2. Fallback to Generic
+    # === ПОПЫТКА 2: Поиск сервера изображений (Basket Hunt) ===
+    # WB разбрасывает товары по серверам basket-01 ... basket-150+.
+    # Мы не знаем точный сервер, поэтому пингуем их все одновременно.
+    
+    found_host = None
+    
+    # Генерируем список потенциальных серверов (с запасом до 150)
+    # Сначала проверяем самые новые (высокие номера), так как ID товара большой
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 151)]
+    hosts.reverse() # Начинаем поиск с конца (для новых товаров это быстрее)
+
+    def check_host(host):
+        # Проверяем существование 1-й картинки (самая легкая проверка)
+        test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
+        try:
+            # Таймаут критически важен (0.4с), иначе будем ждать вечно
+            r = requests.head(test_url, timeout=0.4)
+            if r.status_code == 200:
+                return host
+        except:
+            pass
+        return None
+
+    # Запускаем 20 потоков одновременно, чтобы проверить 150 серверов за пару секунд
+    logger.info(f"🔍 Hunting for image server (ID: {nm_id})...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_host = {executor.submit(check_host, h): h for h in hosts}
+        
+        for future in concurrent.futures.as_completed(future_to_host):
+            result = future.result()
+            if result:
+                found_host = result
+                # Как только нашли рабочий сервер — останавливаем остальные потоки
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+
+    if found_host:
+        logger.info(f"✅ Image Server Found: {found_host}")
+        # Генерируем ссылки на 12 фото
+        for i in range(1, 13):
+            image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+            
+        return image_urls, title
+    else:
+        logger.warning(f"❌ Failed to find image server for {nm_id} (Checked baskets 01-150)")
+
+    # === ПОПЫТКА 3: Fallback (если не нашли корзину) ===
     return parse_generic_json_ld(url, logger)
 
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
@@ -430,3 +464,4 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
