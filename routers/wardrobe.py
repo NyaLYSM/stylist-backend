@@ -122,8 +122,8 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
     """
-    Версия 4.0: Basket Hunt + Title Rescue.
-    Если API не отдало название, парсим его через HTML.
+    Версия 5.0: Smart Direction Hunt.
+    Определяет направление поиска серверов в зависимости от ID товара.
     """
     image_urls = []
     title = None
@@ -137,7 +137,7 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     vol = nm_id // 100000
     part = nm_id // 1000
 
-    # 1. Mobile API
+    # 1. Mobile API (Пытаемся получить название и фото "легально")
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
         headers = {
@@ -155,20 +155,32 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
 
     # 2. Basket Hunt (Поиск картинок)
     found_host = None
-    # Проверяем 150 серверов
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 151)]
-    hosts.reverse() # С конца быстрее для новых товаров
+    
+    # Генерируем список всех возможных серверов
+    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 155)]
+    
+    # 🔥 УМНАЯ СОРТИРОВКА 🔥
+    # Если ID > 435 000 000, товар новый -> скорее всего на серверах 50+ -> ищем с конца
+    # Если ID меньше, товар старый -> лежит на 01-15 -> ищем с начала
+    if nm_id > 435000000:
+        hosts.reverse()
+        logger.info(f"🔍 Hunting logic: REVERSE (New item ID {nm_id})")
+    else:
+        logger.info(f"🔍 Hunting logic: DIRECT (Old item ID {nm_id})")
 
     def check_host(host):
         try:
-            # Таймаут 0.5 сек
-            if requests.head(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp", timeout=0.5).status_code == 200:
+            # Таймаут 0.7 сек (чуть больше для стабильности)
+            # Проверяем не 1.webp, а 1.jpg, так как иногда webp нет у старых товаров, но jpg есть всегда
+            # Но ссылки вернем на webp, так как они легче (если сервер найден, там обычно оба формата)
+            test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
+            if requests.head(test_url, timeout=0.7).status_code == 200:
                 return host
         except: pass
         return None
 
-    logger.info(f"🔍 Hunting for image server (ID: {nm_id})...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+    # 30 потоков, чтобы проверить всё мгновенно
+    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
         future_to_host = {executor.submit(check_host, h): h for h in hosts}
         for future in concurrent.futures.as_completed(future_to_host):
             if future.result():
@@ -178,18 +190,28 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
 
     if found_host:
         logger.info(f"✅ Image Server Found: {found_host}")
+        # Генерируем ссылки
         for i in range(1, 14):
+            # Предпочитаем webp, но fallback на jpg происходит на этапе скачивания в main
             image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
             
-        # === ВАЖНОЕ ДОПОЛНЕНИЕ: СПАСЕНИЕ НАЗВАНИЯ ===
-        # Если картинки нашли, а название нет (API подвел) -> идем парсить HTML
+        # Если API не отдало название, пробуем спасти ситуацию через парсинг HTML
         if not title:
-            logger.info("⚠️ Images found but no title. Starting HTML fallback...")
-            _, html_title = parse_generic_json_ld(url, logger)
-            title = html_title
+            logger.info("⚠️ No title from API. Trying HTML fallback...")
+            try:
+                # Пробуем быстрый запрос через обычный requests (иногда работает лучше curl_cffi для старых страниц)
+                r_html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+                if r_html.status_code == 200:
+                    soup = BeautifulSoup(r_html.content, "lxml")
+                    if soup.title: title = soup.title.string
+            except:
+                # Если не вышло, идем в тяжелую артиллерию
+                _, html_title = parse_generic_json_ld(url, logger)
+                title = html_title
             
         return image_urls, title
     
+    logger.warning(f"❌ Failed to find basket for {nm_id}")
     return parse_generic_json_ld(url, logger)
     
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
@@ -450,5 +472,6 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
