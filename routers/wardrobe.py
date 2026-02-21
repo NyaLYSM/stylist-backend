@@ -122,8 +122,8 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
     """
-    Версия 5.0: Smart Direction Hunt.
-    Определяет направление поиска серверов в зависимости от ID товара.
+    Версия 6.0: Multi-Domain Hunt.
+    Проверяет оба варианта доменов корзин (wbbasket.ru и wb.ru).
     """
     image_urls = []
     title = None
@@ -137,81 +137,75 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     vol = nm_id // 100000
     part = nm_id // 1000
 
-    # 1. Mobile API (Пытаемся получить название и фото "легально")
+    # 1. Попытка API
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
         headers = {
             "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
             "Accept": "*/*"
         }
-        resp = requests.get(api_url, headers=headers, timeout=3)
+        resp = requests.get(api_url, headers=headers, timeout=4)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get('data', {}).get('products', [])
             if products:
                 title = products[0].get('name')
                 if title: logger.info(f"✅ WB API Title: {title}")
-    except: pass
+    except Exception as e:
+        logger.warning(f"⚠️ API fetch error: {e}")
 
-    # 2. Basket Hunt (Поиск картинок)
+    # 2. Basket Hunt (Multi-domain)
     found_host = None
     
-    # Генерируем список всех возможных серверов
-    hosts = [f"basket-{i:02d}.wbbasket.ru" for i in range(1, 155)]
-    
-    # 🔥 УМНАЯ СОРТИРОВКА 🔥
-    # Если ID > 435 000 000, товар новый -> скорее всего на серверах 50+ -> ищем с конца
-    # Если ID меньше, товар старый -> лежит на 01-15 -> ищем с начала
+    # Создаем комбинированный список хостов. Сначала wbbasket.ru, потом wb.ru
+    hosts = []
+    for i in range(1, 155):
+        hosts.append(f"basket-{i:02d}.wbbasket.ru")
+        hosts.append(f"basket-{i:02d}.wb.ru") # Добавили старый домен!
+
     if nm_id > 435000000:
         hosts.reverse()
-        logger.info(f"🔍 Hunting logic: REVERSE (New item ID {nm_id})")
+        logger.info(f"🔍 Multi-Hunt: REVERSE (New item ID {nm_id})")
     else:
-        logger.info(f"🔍 Hunting logic: DIRECT (Old item ID {nm_id})")
+        logger.info(f"🔍 Multi-Hunt: DIRECT (Old item ID {nm_id})")
 
     def check_host(host):
         try:
-            # Таймаут 0.7 сек (чуть больше для стабильности)
-            # Проверяем не 1.webp, а 1.jpg, так как иногда webp нет у старых товаров, но jpg есть всегда
-            # Но ссылки вернем на webp, так как они легче (если сервер найден, там обычно оба формата)
+            # Используем GET вместо HEAD с параметром stream=True для скорости,
+            # так как WB начал банить HEAD запросы на некоторых серверах.
             test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.jpg"
-            if requests.head(test_url, timeout=0.7).status_code == 200:
+            req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            r = requests.get(test_url, headers=req_headers, timeout=1.0, stream=True)
+            if r.status_code == 200:
                 return host
-        except: pass
+            r.close()
+        except Exception:
+            pass
         return None
 
-    # 30 потоков, чтобы проверить всё мгновенно
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+    # Запускаем проверку. 40 потоков, так как список хостов увеличился в 2 раза
+    with concurrent.futures.ThreadPoolExecutor(max_workers=40) as executor:
         future_to_host = {executor.submit(check_host, h): h for h in hosts}
         for future in concurrent.futures.as_completed(future_to_host):
-            if future.result():
-                found_host = future.result()
+            res = future.result()
+            if res:
+                found_host = res
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     if found_host:
         logger.info(f"✅ Image Server Found: {found_host}")
-        # Генерируем ссылки
         for i in range(1, 14):
-            # Предпочитаем webp, но fallback на jpg происходит на этапе скачивания в main
             image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
             
-        # Если API не отдало название, пробуем спасти ситуацию через парсинг HTML
         if not title:
-            logger.info("⚠️ No title from API. Trying HTML fallback...")
-            try:
-                # Пробуем быстрый запрос через обычный requests (иногда работает лучше curl_cffi для старых страниц)
-                r_html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-                if r_html.status_code == 200:
-                    soup = BeautifulSoup(r_html.content, "lxml")
-                    if soup.title: title = soup.title.string
-            except:
-                # Если не вышло, идем в тяжелую артиллерию
-                _, html_title = parse_generic_json_ld(url, logger)
-                title = html_title
+            logger.info("⚠️ Title not found via API, trying HTML fallback...")
+            _, html_title = parse_generic_json_ld(url, logger)
+            title = html_title
             
         return image_urls, title
     
-    logger.warning(f"❌ Failed to find basket for {nm_id}")
+    logger.warning(f"❌ Failed to find basket for {nm_id}. Trying Generic Parser...")
     return parse_generic_json_ld(url, logger)
     
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
@@ -472,6 +466,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
