@@ -199,14 +199,11 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     # 2. Мгновенно вычисляем сервер математически
     basket_id = get_wb_basket(vol)
     
-    # Старые товары часто лежат на .wb.ru, а новые на .wbbasket.ru. 
-    # Делаем всего ОДИН быстрый проверочный запрос нужного домена.
-    host = f"basket-{basket_id}.wbbasket.ru"
-    try:
-        test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
-        if crequests.head(test_url, impersonate="chrome120", timeout=3).status_code != 200:
-            host = f"basket-{basket_id}.wb.ru"
-    except:
+    # Жесткая логика без проверочных пингов: 
+    # Все корзины начиная с 16-й переехали на .wbbasket.ru
+    if int(basket_id) >= 16:
+        host = f"basket-{basket_id}.wbbasket.ru"
+    else:
         host = f"basket-{basket_id}.wb.ru"
         
     logger.info(f"✅ Calculated Image Server: {host}")
@@ -480,6 +477,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
