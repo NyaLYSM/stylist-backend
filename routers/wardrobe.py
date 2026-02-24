@@ -121,101 +121,70 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 # --- MARKETPLACE PARSERS (SYNCHRONOUS) ---
 
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
-    """
-    Версия 9.0: Smart Hunt + Safe Title.
-    Математика WB больше не работает для новых товаров.
-    Используем безопасный пинг 45 актуальных серверов.
-    """
     image_urls = []
-    title = None
+    title = "Товар Wildberries"
     nm_id = None
-    pics_count = 10
     
     match = re.search(r'catalog/(\d+)', url)
     if match: nm_id = int(match.group(1))
-    
     if not nm_id: return [], None
 
     vol = nm_id // 100000
     part = nm_id // 1000
 
-    # 1. Пытаемся достать название и кол-во фото через стандартный API
+    # 1. Пробуем получить данные через API
     try:
-        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
-        }
-        resp = requests.get(api_url, headers=headers, timeout=4)
+        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
+        resp = requests.get(api_url, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get('data', {}).get('products', [])
             if products:
-                prod = products[0]
-                title = prod.get('name')
-                pics_count = prod.get('pics', 10) 
-                logger.info(f"✅ WB API Success. Title: '{title}', Pics: {pics_count}")
-    except Exception as e:
-        logger.warning(f"⚠️ WB API fetch warning: {e}")
+                title = products[0].get('name', title)
+                # Если API не дало кол-во фото, ставим минимум 5
+                pics_count = products[0].get('pics', 5)
+                logger.info(f"✅ WB API: {title}, Pics: {pics_count}")
+            else:
+                pics_count = 5
+        else:
+            pics_count = 5
+    except Exception:
+        pics_count = 5
 
-    # 2. Охота на корзину (Smart Basket Hunt)
-    # Сейчас у WB актуальны корзины с 01 по 45. Пингуем только их (это безопасно и не вызывает бан)
+    # 2. Охота на корзину (Smart Hunt)
     found_host = None
-    hosts_to_check = []
-    
-    for i in range(1, 46):
-        hosts_to_check.append(f"basket-{i:02d}.wbbasket.ru")
-        # Для очень старых товаров (до 15 корзины) проверяем еще и старый домен .wb.ru
-        if i <= 15:
-            hosts_to_check.append(f"basket-{i:02d}.wb.ru")
-
-    # Если товар новый, логично начать проверку с конца списка (с 45-й корзины)
-    if nm_id > 435000000:
-        hosts_to_check.reverse()
+    # Список самых "плотных" корзин для новых товаров
+    priority_baskets = [36, 35, 41, 40, 38, 37, 28, 29] 
+    others = [i for i in range(1, 46) if i not in priority_baskets]
+    hosts_to_check = [f"basket-{i:02d}.wbbasket.ru" for i in (priority_baskets + others)]
 
     def check_host(host):
         try:
-            test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
-            # Быстрый HEAD-запрос
-            r = requests.head(test_url, timeout=1.5)
-            if r.status_code == 200:
-                return host
-        except:
-            pass
+            # Проверяем только ПЕРВОЕ фото
+            r = requests.head(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp", timeout=2.0)
+            if r.status_code == 200: return host
+        except: pass
         return None
 
-    logger.info(f"🔍 Hunting for basket across {len(hosts_to_check)} hosts...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        future_to_host = {executor.submit(check_host, h): h for h in hosts_to_check}
-        for future in concurrent.futures.as_completed(future_to_host):
+    logger.info(f"🔍 Deep hunting for {nm_id}...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        futures = {executor.submit(check_host, h): h for h in hosts_to_check}
+        for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res:
                 found_host = res
-                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-    # 3. Собираем результаты
-    if found_host:
-        logger.info(f"✅ Exact Image Server Found: {found_host}")
-        for i in range(1, pics_count + 1):
-            image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
-            
-        # Гарантируем, что если название не найдено, скрипт не упадет
-        if not title:
-            logger.info("⚠️ Title missing. Using fallback parser...")
-            try:
-                _, html_title = parse_generic_json_ld(url, logger)
-                title = html_title
-            except Exception:
-                pass
-                
-            if not title:
-                title = "Товар Wildberries" # Заглушка, чтобы 100% отдать картинки
-                
-        return image_urls, title
+    # 3. ФОРМИРОВАНИЕ РЕЗУЛЬТАТА
+    if not found_host:
+        # КРИТИЧЕСКИЙ FALLBACK: Если ничего не нашли, пробуем basket-36 (самый частый сейчас)
+        logger.warning("⚠️ Hunt failed. Using fallback basket-36")
+        found_host = "basket-36.wbbasket.ru"
 
-    # 4. Если даже охота не удалась (например, WB временно лёг)
-    logger.error("❌ Basket hunt failed. Falling back to generic HTML parsing...")
-    return parse_generic_json_ld(url, logger)
+    for i in range(1, pics_count + 1):
+        image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+    
+    return image_urls, title
     
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
     """Универсальный парсер (JSON-LD / OG)"""
@@ -475,6 +444,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
