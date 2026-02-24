@@ -120,52 +120,11 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 
 # --- MARKETPLACE PARSERS (SYNCHRONOUS) ---
 
-def get_wb_basket(vol: int) -> str:
-    """Официальная математика маршрутизации серверов Wildberries. Работает мгновенно."""
-    if 0 <= vol <= 143: return "01"
-    if 144 <= vol <= 287: return "02"
-    if 288 <= vol <= 431: return "03"
-    if 432 <= vol <= 719: return "04"
-    if 720 <= vol <= 1007: return "05"
-    if 1008 <= vol <= 1061: return "06"
-    if 1062 <= vol <= 1115: return "07"
-    if 1116 <= vol <= 1169: return "08"
-    if 1170 <= vol <= 1313: return "09"
-    if 1314 <= vol <= 1601: return "10"
-    if 1602 <= vol <= 1655: return "11"
-    if 1656 <= vol <= 1919: return "12"
-    if 1920 <= vol <= 2045: return "13"
-    if 2046 <= vol <= 2189: return "14"
-    if 2190 <= vol <= 2405: return "15"
-    if 2406 <= vol <= 2621: return "16"
-    if 2622 <= vol <= 2837: return "17"
-    if 2838 <= vol <= 3053: return "18"
-    if 3054 <= vol <= 3269: return "19"
-    if 3270 <= vol <= 3485: return "20"
-    if 3486 <= vol <= 3701: return "21"
-    if 3702 <= vol <= 3917: return "22"
-    if 3918 <= vol <= 4133: return "23"
-    if 4134 <= vol <= 4349: return "24"
-    if 4350 <= vol <= 4565: return "25"
-    if 4566 <= vol <= 4781: return "26"
-    if 4782 <= vol <= 4997: return "27"
-    if 4998 <= vol <= 5213: return "28"
-    if 5214 <= vol <= 5429: return "29"
-    if 5430 <= vol <= 5645: return "30"
-    if 5646 <= vol <= 5861: return "31"
-    if 5862 <= vol <= 6077: return "32"
-    if 6078 <= vol <= 6293: return "33"
-    if 6294 <= vol <= 6509: return "34"
-    if 6510 <= vol <= 6725: return "35"
-    if 6726 <= vol <= 6941: return "36"
-    # Для новейших товаров WB использует формулу +1 к номеру корзины каждые 216 vol
-    return str(37 + (vol - 6942) // 216).zfill(2)
-
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
     """
-    Версия 8.0: Умная проверка + HTML Rescue.
-    Скрипт проверяет вычисленный сервер, и если WB изменил адреса (DNS ошибка),
-    вытаскивает реальный рабочий сервер прямо из кода страницы товара.
+    Версия 9.0: Smart Hunt + Safe Title.
+    Математика WB больше не работает для новых товаров.
+    Используем безопасный пинг 45 актуальных серверов.
     """
     image_urls = []
     title = None
@@ -180,11 +139,13 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     vol = nm_id // 100000
     part = nm_id // 1000
 
-    # 1. Запрос к API (Убрали dest, чтобы находило товары, которых нет на складах МСК)
+    # 1. Пытаемся достать название и кол-во фото через стандартный API
     try:
-        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&spp=30&nm={nm_id}"
-        resp = crequests.get(api_url, impersonate="chrome120", timeout=5)
-        
+        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+        }
+        resp = requests.get(api_url, headers=headers, timeout=4)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get('data', {}).get('products', [])
@@ -192,62 +153,69 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
                 prod = products[0]
                 title = prod.get('name')
                 pics_count = prod.get('pics', 10) 
-                if title: logger.info(f"✅ WB API Success. Title: '{title}', Pics: {pics_count}")
+                logger.info(f"✅ WB API Success. Title: '{title}', Pics: {pics_count}")
     except Exception as e:
         logger.warning(f"⚠️ WB API fetch warning: {e}")
 
-    # 2. Вычисляем сервер математически
-    basket_id = get_wb_basket(vol)
-    if int(basket_id) >= 16:
-        host = f"basket-{basket_id}.wbbasket.ru"
-    else:
-        host = f"basket-{basket_id}.wb.ru"
-        
-    logger.info(f"🔍 Calculated Image Server: {host}. Testing connection...")
+    # 2. Охота на корзину (Smart Basket Hunt)
+    # Сейчас у WB актуальны корзины с 01 по 45. Пингуем только их (это безопасно и не вызывает бан)
+    found_host = None
+    hosts_to_check = []
     
-    # 3. ПРОВЕРКА: Существует ли этот сервер на самом деле?
-    host_is_valid = False
-    try:
-        test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
-        if crequests.head(test_url, impersonate="chrome120", timeout=2.5).status_code == 200:
-            host_is_valid = True
-    except:
-        pass # Если тут падает NameResolutionError, host_is_valid останется False
+    for i in range(1, 46):
+        hosts_to_check.append(f"basket-{i:02d}.wbbasket.ru")
+        # Для очень старых товаров (до 15 корзины) проверяем еще и старый домен .wb.ru
+        if i <= 15:
+            hosts_to_check.append(f"basket-{i:02d}.wb.ru")
 
-    # 4. Если сервер валидный — генерируем ссылки
-    if host_is_valid:
-        logger.info(f"✅ Host is alive! Generating URLs...")
+    # Если товар новый, логично начать проверку с конца списка (с 45-й корзины)
+    if nm_id > 435000000:
+        hosts_to_check.reverse()
+
+    def check_host(host):
+        try:
+            test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
+            # Быстрый HEAD-запрос
+            r = requests.head(test_url, timeout=1.5)
+            if r.status_code == 200:
+                return host
+        except:
+            pass
+        return None
+
+    logger.info(f"🔍 Hunting for basket across {len(hosts_to_check)} hosts...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_host = {executor.submit(check_host, h): h for h in hosts_to_check}
+        for future in concurrent.futures.as_completed(future_to_host):
+            res = future.result()
+            if res:
+                found_host = res
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+
+    # 3. Собираем результаты
+    if found_host:
+        logger.info(f"✅ Exact Image Server Found: {found_host}")
         for i in range(1, pics_count + 1):
-            image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
-        
+            image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+            
+        # Гарантируем, что если название не найдено, скрипт не упадет
         if not title:
-            _, title = parse_generic_json_ld(url, logger)
+            logger.info("⚠️ Title missing. Using fallback parser...")
+            try:
+                _, html_title = parse_generic_json_ld(url, logger)
+                title = html_title
+            except Exception:
+                pass
+                
+            if not title:
+                title = "Товар Wildberries" # Заглушка, чтобы 100% отдать картинки
+                
         return image_urls, title
-        
-    # 5. СПАСАТЕЛЬНЫЙ КРУГ (HTML Rescue)
-    # Если мы тут, значит WB не создал 41-ю корзину, и мы берем реальный адрес из HTML
-    logger.warning(f"⚠️ Calculated host '{host}' is dead. Activating HTML Rescue...")
-    
-    html_urls, html_title = parse_generic_json_ld(url, logger)
-    if not title: title = html_title
-    
-    if html_urls:
-        for u in html_urls:
-            # Ищем ссылку типа https://basket-xx.wb.ru/...
-            match = re.search(r'(basket-\d+\.wb(?:basket)?\.ru)', u)
-            if match:
-                real_host = match.group(1)
-                logger.info(f"🎯 Extracted REAL host from webpage: {real_host}")
-                for i in range(1, pics_count + 1):
-                    image_urls.append(f"https://{real_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
-                return image_urls, title
-        
-        # Если регулярка не сработала, просто возвращаем то, что нашел парсер
-        logger.info("✅ Returning URLs directly from HTML tags.")
-        return html_urls, title
 
-    logger.error("❌ All parsing methods failed.")
-    return [], title
+    # 4. Если даже охота не удалась (например, WB временно лёг)
+    logger.error("❌ Basket hunt failed. Falling back to generic HTML parsing...")
+    return parse_generic_json_ld(url, logger)
     
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
     """Универсальный парсер (JSON-LD / OG)"""
@@ -507,6 +475,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
