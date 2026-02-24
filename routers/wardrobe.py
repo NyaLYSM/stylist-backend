@@ -163,13 +163,14 @@ def get_wb_basket(vol: int) -> str:
 
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
     """
-    Версия 7.0: Математическая Маршрутизация.
-    БЕЗ брутфорса серверов. Идеально обходит блокировки.
+    Версия 8.0: Умная проверка + HTML Rescue.
+    Скрипт проверяет вычисленный сервер, и если WB изменил адреса (DNS ошибка),
+    вытаскивает реальный рабочий сервер прямо из кода страницы товара.
     """
     image_urls = []
     title = None
     nm_id = None
-    pics_count = 10 # По умолчанию скачиваем 10 превью
+    pics_count = 10
     
     match = re.search(r'catalog/(\d+)', url)
     if match: nm_id = int(match.group(1))
@@ -179,9 +180,9 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     vol = nm_id // 100000
     part = nm_id // 1000
 
-    # 1. Безопасный запрос через crequests (имитация Chrome обходит WAF WB)
+    # 1. Запрос к API (Убрали dest, чтобы находило товары, которых нет на складах МСК)
     try:
-        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm={nm_id}"
+        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&spp=30&nm={nm_id}"
         resp = crequests.get(api_url, impersonate="chrome120", timeout=5)
         
         if resp.status_code == 200:
@@ -190,34 +191,63 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
             if products:
                 prod = products[0]
                 title = prod.get('name')
-                # WB API говорит нам точное количество фото товара
                 pics_count = prod.get('pics', 10) 
                 if title: logger.info(f"✅ WB API Success. Title: '{title}', Pics: {pics_count}")
     except Exception as e:
         logger.warning(f"⚠️ WB API fetch warning: {e}")
 
-    # 2. Мгновенно вычисляем сервер математически
+    # 2. Вычисляем сервер математически
     basket_id = get_wb_basket(vol)
-    
-    # Жесткая логика без проверочных пингов: 
-    # Все корзины начиная с 16-й переехали на .wbbasket.ru
     if int(basket_id) >= 16:
         host = f"basket-{basket_id}.wbbasket.ru"
     else:
         host = f"basket-{basket_id}.wb.ru"
         
-    logger.info(f"✅ Calculated Image Server: {host}")
+    logger.info(f"🔍 Calculated Image Server: {host}. Testing connection...")
     
-    # 3. Генерируем точное количество ссылок
-    for i in range(1, pics_count + 1):
-        image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+    # 3. ПРОВЕРКА: Существует ли этот сервер на самом деле?
+    host_is_valid = False
+    try:
+        test_url = f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
+        if crequests.head(test_url, impersonate="chrome120", timeout=2.5).status_code == 200:
+            host_is_valid = True
+    except:
+        pass # Если тут падает NameResolutionError, host_is_valid останется False
+
+    # 4. Если сервер валидный — генерируем ссылки
+    if host_is_valid:
+        logger.info(f"✅ Host is alive! Generating URLs...")
+        for i in range(1, pics_count + 1):
+            image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
         
-    # 4. Если всё-таки API не отдало название, используем HTML fallback
-    if not title:
-        logger.info("⚠️ Title missing from API. Running HTML fallback...")
-        _, title = parse_generic_json_ld(url, logger)
+        if not title:
+            _, title = parse_generic_json_ld(url, logger)
+        return image_urls, title
         
-    return image_urls, title
+    # 5. СПАСАТЕЛЬНЫЙ КРУГ (HTML Rescue)
+    # Если мы тут, значит WB не создал 41-ю корзину, и мы берем реальный адрес из HTML
+    logger.warning(f"⚠️ Calculated host '{host}' is dead. Activating HTML Rescue...")
+    
+    html_urls, html_title = parse_generic_json_ld(url, logger)
+    if not title: title = html_title
+    
+    if html_urls:
+        for u in html_urls:
+            # Ищем ссылку типа https://basket-xx.wb.ru/...
+            match = re.search(r'(basket-\d+\.wb(?:basket)?\.ru)', u)
+            if match:
+                real_host = match.group(1)
+                logger.info(f"🎯 Extracted REAL host from webpage: {real_host}")
+                for i in range(1, pics_count + 1):
+                    image_urls.append(f"https://{real_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+                return image_urls, title
+        
+        # Если регулярка не сработала, просто возвращаем то, что нашел парсер
+        logger.info("✅ Returning URLs directly from HTML tags.")
+        return html_urls, title
+
+    logger.error("❌ All parsing methods failed.")
+    return [], title
     
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
     """Универсальный парсер (JSON-LD / OG)"""
@@ -477,6 +507,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
