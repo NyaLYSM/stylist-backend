@@ -122,7 +122,7 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
     image_urls = []
-    title = "Товар Wildberries"
+    title = None
     nm_id = None
     
     match = re.search(r'catalog/(\d+)', url)
@@ -132,35 +132,34 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
     vol = nm_id // 100000
     part = nm_id // 1000
 
-    # 1. Пробуем получить данные через API
+    # 1. Запрос к API через анти-бот (crequests)
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
-        resp = requests.get(api_url, timeout=5)
+        # Имитируем Chrome 120, чтобы WB не скрыл название
+        resp = crequests.get(api_url, impersonate="chrome120", timeout=5)
         if resp.status_code == 200:
             data = resp.json()
             products = data.get('data', {}).get('products', [])
             if products:
-                title = products[0].get('name', title)
-                # Если API не дало кол-во фото, ставим минимум 5
+                title = products[0].get('name')
                 pics_count = products[0].get('pics', 5)
-                logger.info(f"✅ WB API: {title}, Pics: {pics_count}")
+                logger.info(f"✅ WB API: '{title}', Pics: {pics_count}")
             else:
                 pics_count = 5
         else:
             pics_count = 5
-    except Exception:
+    except Exception as e:
+        logger.warning(f"⚠️ API Error: {e}")
         pics_count = 5
 
     # 2. Охота на корзину (Smart Hunt)
     found_host = None
-    # Список самых "плотных" корзин для новых товаров
     priority_baskets = [36, 35, 41, 40, 38, 37, 28, 29] 
     others = [i for i in range(1, 46) if i not in priority_baskets]
     hosts_to_check = [f"basket-{i:02d}.wbbasket.ru" for i in (priority_baskets + others)]
 
     def check_host(host):
         try:
-            # Проверяем только ПЕРВОЕ фото
             r = requests.head(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp", timeout=2.0)
             if r.status_code == 200: return host
         except: pass
@@ -173,15 +172,15 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
             res = future.result()
             if res:
                 found_host = res
+                executor.shutdown(wait=False, cancel_futures=True)
                 break
 
     # 3. ФОРМИРОВАНИЕ РЕЗУЛЬТАТА
     if not found_host:
-        # КРИТИЧЕСКИЙ FALLBACK: Если ничего не нашли, пробуем basket-36 (самый частый сейчас)
         logger.warning("⚠️ Hunt failed. Using fallback basket-36")
         found_host = "basket-36.wbbasket.ru"
 
-    for i in range(1, pics_count + 1):
+    for i in range(1, min(pics_count + 1, 10)): # Берем максимум 9 фото для скорости
         image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
     
     return image_urls, title
@@ -282,9 +281,7 @@ async def add_marketplace_with_variants(
 ):
     loop = asyncio.get_event_loop()
     
-    # 1. Запуск парсера (В отдельном потоке)
     try:
-        # ВАЖНО: Вызываем синхронную функцию get_marketplace_data
         image_urls, full_title = await loop.run_in_executor(
             None, 
             lambda: get_marketplace_data(payload.url)
@@ -294,25 +291,31 @@ async def add_marketplace_with_variants(
         raise HTTPException(400, f"Ошибка обработки ссылки: {str(e)}")
 
     if not image_urls:
-        logger.warning(f"❌ No images found for {payload.url}")
         raise HTTPException(400, "Не удалось найти изображения. Попробуйте обновить страницу товара.")
 
-    # 2. Подготовка CLIP
     raw_name = payload.name if payload.name else (full_title if full_title else "clothing")
     clip_prompt = extract_smart_title(raw_name)
     logger.info(f"🧠 CLIP Prompt: '{clip_prompt}'")
 
-    # 3. Анализ (Скачивание и обработка)
     temp_id = uuid.uuid4().hex
     candidates = []
-    process_urls = image_urls[:10]
     
-    for idx, img_url in enumerate(process_urls):
+    # Ограничиваем до 6 фото, чтобы не заставлять юзера ждать вечность
+    process_urls = image_urls[:6] 
+    
+    # 🔥 ПАРАЛЛЕЛЬНОЕ СКАЧИВАНИЕ ФОТО 🔥 (Ускоряет в 4-5 раз)
+    logger.info("⚡ Downloading images concurrently...")
+    download_tasks = [
+        loop.run_in_executor(None, lambda u=img_url: download_image_bytes(u))
+        for img_url in process_urls
+    ]
+    downloaded_files = await asyncio.gather(*download_tasks)
+
+    # Обработка скачанных файлов
+    for idx, file_bytes in enumerate(downloaded_files):
+        if not file_bytes: continue
+        
         try:
-            file_bytes = await loop.run_in_executor(None, lambda: download_image_bytes(img_url))
-            if not file_bytes: continue
-            
-            # Конвертация RGBA -> RGB
             img = Image.open(BytesIO(file_bytes))
             if img.mode != 'RGB':
                 bg = Image.new("RGB", img.size, (255, 255, 255))
@@ -324,6 +327,7 @@ async def add_marketplace_with_variants(
 
             heuristic_score = analyze_image_score(img, idx, len(process_urls))
             
+            # Нейросеть (CLIP) вызываем последовательно, чтобы не было Out of Memory
             clip_score = 0.0
             if CLIP_AVAILABLE and heuristic_score > 20: 
                 clip_score = await loop.run_in_executor(
@@ -340,7 +344,7 @@ async def add_marketplace_with_variants(
             
             candidates.append({
                 "score": final_score,
-                "original_url": img_url,
+                "original_url": process_urls[idx],
                 "preview_bytes": out.getvalue(),
                 "original_idx": idx
             })
@@ -350,7 +354,6 @@ async def add_marketplace_with_variants(
         except Exception as e:
             logger.warning(f"Skipping img {idx}: {e}")
 
-    # 4. Сортировка и ответ
     candidates.sort(key=lambda x: x["score"], reverse=True)
     top_candidates = candidates[:4]
     top_candidates.sort(key=lambda x: x["original_idx"])
@@ -444,6 +447,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
