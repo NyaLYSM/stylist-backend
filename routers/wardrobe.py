@@ -131,26 +131,40 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
 
     vol = nm_id // 100000
     part = nm_id // 1000
+    pics_count = 5
 
-    # 1. Запрос к API через анти-бот (crequests)
+    # 1. Попытка получить настоящее название через API
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
-        # Имитируем Chrome 120, чтобы WB не скрыл название
-        resp = crequests.get(api_url, impersonate="chrome120", timeout=5)
+        resp = crequests.get(api_url, impersonate="chrome120", timeout=3)
         if resp.status_code == 200:
-            data = resp.json()
-            products = data.get('data', {}).get('products', [])
+            products = resp.json().get('data', {}).get('products', [])
             if products:
                 title = products[0].get('name')
                 pics_count = products[0].get('pics', 5)
-                logger.info(f"✅ WB API: '{title}', Pics: {pics_count}")
-            else:
-                pics_count = 5
-        else:
-            pics_count = 5
-    except Exception as e:
-        logger.warning(f"⚠️ API Error: {e}")
-        pics_count = 5
+    except: pass
+
+    # 1.1 СПАСАТЕЛЬНЫЙ КРУГ ДЛЯ НАЗВАНИЯ (Парсинг HTML страницы)
+    if not title:
+        logger.info("⚠️ API title failed, fetching HTML...")
+        try:
+            html_resp = crequests.get(url, impersonate="chrome120", timeout=3)
+            if html_resp.status_code == 200:
+                soup = BeautifulSoup(html_resp.content, "lxml")
+                og_title = soup.find("meta", property="og:title")
+                if og_title: 
+                    title = og_title.get("content")
+                elif soup.title: 
+                    title = soup.title.string
+        except: pass
+
+    # Очищаем название от мусора магазина для красивого отображения на фронте
+    if title:
+        title = title.replace("Wildberries", "").replace("Купить в интернет-магазине", "").split("—")[0].strip()
+    else:
+        title = "Одежда" # Финальный фоллбек
+
+    logger.info(f"✅ Extracted Title: '{title}', Pics: {pics_count}")
 
     # 2. Охота на корзину (Smart Hunt)
     found_host = None
@@ -160,7 +174,7 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
 
     def check_host(host):
         try:
-            r = requests.head(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp", timeout=2.0)
+            r = requests.head(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp", timeout=1.5)
             if r.status_code == 200: return host
         except: pass
         return None
@@ -175,12 +189,10 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-    # 3. ФОРМИРОВАНИЕ РЕЗУЛЬТАТА
     if not found_host:
-        logger.warning("⚠️ Hunt failed. Using fallback basket-36")
         found_host = "basket-36.wbbasket.ru"
 
-    for i in range(1, min(pics_count + 1, 10)): # Берем максимум 9 фото для скорости
+    for i in range(1, pics_count + 1):
         image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
     
     return image_urls, title
@@ -291,7 +303,7 @@ async def add_marketplace_with_variants(
         raise HTTPException(400, f"Ошибка обработки ссылки: {str(e)}")
 
     if not image_urls:
-        raise HTTPException(400, "Не удалось найти изображения. Попробуйте обновить страницу товара.")
+        raise HTTPException(400, "Не удалось найти изображения.")
 
     raw_name = payload.name if payload.name else (full_title if full_title else "clothing")
     clip_prompt = extract_smart_title(raw_name)
@@ -300,10 +312,9 @@ async def add_marketplace_with_variants(
     temp_id = uuid.uuid4().hex
     candidates = []
     
-    # Ограничиваем до 6 фото, чтобы не заставлять юзера ждать вечность
-    process_urls = image_urls[:6] 
+    # 🔥 УСКОРЕНИЕ: Берем только 4 первых фото (этого достаточно)
+    process_urls = image_urls[:4] 
     
-    # 🔥 ПАРАЛЛЕЛЬНОЕ СКАЧИВАНИЕ ФОТО 🔥 (Ускоряет в 4-5 раз)
     logger.info("⚡ Downloading images concurrently...")
     download_tasks = [
         loop.run_in_executor(None, lambda u=img_url: download_image_bytes(u))
@@ -311,7 +322,6 @@ async def add_marketplace_with_variants(
     ]
     downloaded_files = await asyncio.gather(*download_tasks)
 
-    # Обработка скачанных файлов
     for idx, file_bytes in enumerate(downloaded_files):
         if not file_bytes: continue
         
@@ -327,12 +337,15 @@ async def add_marketplace_with_variants(
 
             heuristic_score = analyze_image_score(img, idx, len(process_urls))
             
-            # Нейросеть (CLIP) вызываем последовательно, чтобы не было Out of Memory
             clip_score = 0.0
-            if CLIP_AVAILABLE and heuristic_score > 20: 
+            if CLIP_AVAILABLE and heuristic_score > 20:
+                # 🔥 УСКОРЕНИЕ: Сжимаем фото перед отправкой в медленный CLIP!
+                clip_img = img.copy()
+                clip_img.thumbnail((336, 336)) 
+                
                 clip_score = await loop.run_in_executor(
                     None,
-                    lambda: rate_image_relevance(img, clip_prompt)
+                    lambda: rate_image_relevance(clip_img, clip_prompt)
                 )
             
             final_score = (heuristic_score * 0.3) + (clip_score * 0.7)
@@ -379,6 +392,7 @@ async def add_marketplace_with_variants(
         "created_at": datetime.utcnow()
     }
     
+    # Отдаем чистое название на фронтенд
     display_name = full_title if full_title else "Новая вещь"
     if len(display_name) > 60: display_name = display_name[:57] + "..."
 
@@ -447,6 +461,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
