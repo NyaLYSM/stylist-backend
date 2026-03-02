@@ -131,9 +131,9 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
 
     vol = nm_id // 100000
     part = nm_id // 1000
-    pics_count = 5
+    pics_count = 6 # Обычно 6 фото хватает, чтобы пропустить мусор в конце
 
-    # 1. Попытка получить настоящее название через API
+    # 1. Попытка через API
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
         resp = crequests.get(api_url, impersonate="chrome120", timeout=3)
@@ -141,61 +141,29 @@ def parse_wildberries(url: str, logger) -> tuple[list, str]:
             products = resp.json().get('data', {}).get('products', [])
             if products:
                 title = products[0].get('name')
-                pics_count = products[0].get('pics', 5)
+                pics_count = products[0].get('pics', 6)
     except: pass
 
-    # 1.1 СПАСАТЕЛЬНЫЙ КРУГ ДЛЯ НАЗВАНИЯ (Парсинг HTML страницы)
-    if not title:
-        logger.info("⚠️ API title failed, fetching HTML...")
+    # 2. Улучшенный Fallback для заголовка (Парсим мета-теги напрямую)
+    if not title or title.lower() == "одежда":
         try:
-            html_resp = crequests.get(url, impersonate="chrome120", timeout=3)
-            if html_resp.status_code == 200:
-                soup = BeautifulSoup(html_resp.content, "lxml")
-                og_title = soup.find("meta", property="og:title")
-                if og_title: 
-                    title = og_title.get("content")
-                elif soup.title: 
-                    title = soup.title.string
+            h_resp = crequests.get(url, impersonate="chrome120", timeout=4)
+            if h_resp.status_code == 200:
+                soup = BeautifulSoup(h_resp.content, "lxml")
+                # Ищем в OpenGraph или основном заголовке
+                og = soup.find("meta", property="og:title")
+                title = og["content"] if og else soup.title.string
+                # Чистим от "Wildberries" и лишнего
+                title = re.sub(r' — купить в интернет-магазине.*', '', title, flags=re.I).strip()
         except: pass
 
-    # Очищаем название от мусора магазина для красивого отображения на фронте
-    if title:
-        title = title.replace("Wildberries", "").replace("Купить в интернет-магазине", "").split("—")[0].strip()
-    else:
-        title = "Одежда" # Финальный фоллбек
-
-    logger.info(f"✅ Extracted Title: '{title}', Pics: {pics_count}")
-
-    # 2. Охота на корзину (Smart Hunt)
-    found_host = None
-    priority_baskets = [36, 35, 41, 40, 38, 37, 28, 29] 
-    others = [i for i in range(1, 46) if i not in priority_baskets]
-    hosts_to_check = [f"basket-{i:02d}.wbbasket.ru" for i in (priority_baskets + others)]
-
-    def check_host(host):
-        try:
-            r = requests.head(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/1.webp", timeout=1.5)
-            if r.status_code == 200: return host
-        except: pass
-        return None
-
-    logger.info(f"🔍 Deep hunting for {nm_id}...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
-        futures = {executor.submit(check_host, h): h for h in hosts_to_check}
-        for future in concurrent.futures.as_completed(futures):
-            res = future.result()
-            if res:
-                found_host = res
-                executor.shutdown(wait=False, cancel_futures=True)
-                break
-
-    if not found_host:
-        found_host = "basket-36.wbbasket.ru"
-
-    for i in range(1, pics_count + 1):
-        image_urls.append(f"https://{found_host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+    basket_id = get_wb_basket(vol)
+    host = f"basket-{basket_id}.wbbasket.ru"
     
-    return image_urls, title
+    for i in range(1, min(pics_count, 8) + 1): # Не берем больше 8 фото
+        image_urls.append(f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp")
+        
+    return image_urls, title or "Товар Wildberries"
     
 def parse_generic_json_ld(url: str, logger) -> tuple[list, str]:
     """Универсальный парсер (JSON-LD / OG)"""
@@ -293,65 +261,49 @@ async def add_marketplace_with_variants(
 ):
     loop = asyncio.get_event_loop()
     
-    try:
-        image_urls, full_title = await loop.run_in_executor(
-            None, 
-            lambda: get_marketplace_data(payload.url)
-        )
-    except Exception as e:
-        logger.error(f"❌ Parser crashed: {e}")
-        raise HTTPException(400, f"Ошибка обработки ссылки: {str(e)}")
-
+    # 1. Быстрый парсинг ссылок
+    image_urls, full_title = await loop.run_in_executor(None, lambda: get_marketplace_data(payload.url))
     if not image_urls:
         raise HTTPException(400, "Не удалось найти изображения.")
 
     raw_name = payload.name if payload.name else (full_title if full_title else "clothing")
     clip_prompt = extract_smart_title(raw_name)
-    logger.info(f"🧠 CLIP Prompt: '{clip_prompt}'")
+    
+    # 2. ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА всех картинок сразу
+    process_urls = image_urls[:6] # Берем первые 6 (инфографика обычно идет позже)
+    download_tasks = [loop.run_in_executor(None, lambda u=url: download_image_bytes(u)) for url in process_urls]
+    downloaded_contents = await asyncio.gather(*download_tasks)
 
     temp_id = uuid.uuid4().hex
     candidates = []
-    
-    # 🔥 УСКОРЕНИЕ: Берем только 4 первых фото (этого достаточно)
-    process_urls = image_urls[:4] 
-    
-    logger.info("⚡ Downloading images concurrently...")
-    download_tasks = [
-        loop.run_in_executor(None, lambda u=img_url: download_image_bytes(u))
-        for img_url in process_urls
-    ]
-    downloaded_files = await asyncio.gather(*download_tasks)
 
-    for idx, file_bytes in enumerate(downloaded_files):
+    # 3. Обработка скачанных файлов
+    for idx, file_bytes in enumerate(downloaded_contents):
         if not file_bytes: continue
-        
         try:
-            img = Image.open(BytesIO(file_bytes))
-            if img.mode != 'RGB':
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                if img.mode in ('RGBA', 'LA'):
-                    bg.paste(img, mask=img.split()[-1])
-                else:
-                    bg.paste(img)
-                img = bg
-
+            img = Image.open(BytesIO(file_bytes)).convert("RGB")
+            
+            # Предварительный скоринг (геометрия + шум)
             heuristic_score = analyze_image_score(img, idx, len(process_urls))
             
+            # Если картинка слишком "шумная" (много текста/краев), режем ей баллы сильнее
+            gray = img.convert("L").filter(ImageFilter.FIND_EDGES)
+            edge_val = ImageStat.Stat(gray).mean[0]
+            if edge_val > 45: heuristic_score -= 30 
+
             clip_score = 0.0
-            if CLIP_AVAILABLE and heuristic_score > 20:
-                # 🔥 УСКОРЕНИЕ: Сжимаем фото перед отправкой в медленный CLIP!
+            if CLIP_AVAILABLE and heuristic_score > 10:
+                # 🔥 УСКОРЕНИЕ: Сжимаем для CLIP
                 clip_img = img.copy()
-                clip_img.thumbnail((336, 336)) 
-                
-                clip_score = await loop.run_in_executor(
-                    None,
-                    lambda: rate_image_relevance(clip_img, clip_prompt)
-                )
+                clip_img.thumbnail((336, 336))
+                clip_score = await loop.run_in_executor(None, lambda: rate_image_relevance(clip_img, clip_prompt))
             
-            final_score = (heuristic_score * 0.3) + (clip_score * 0.7)
+            # Вес CLIP выше, чтобы лучше отсеивать нерелевантное
+            final_score = (heuristic_score * 0.25) + (clip_score * 0.75)
             
+            # Подготовка превью
             preview_img = img.copy()
-            preview_img.thumbnail((400, 400))
+            preview_img.thumbnail((450, 450))
             out = BytesIO()
             preview_img.save(out, format='JPEG', quality=85)
             
@@ -361,29 +313,20 @@ async def add_marketplace_with_variants(
                 "preview_bytes": out.getvalue(),
                 "original_idx": idx
             })
-            
-            logger.info(f"Img {idx+1}: Score={final_score:.1f} (CLIP={clip_score:.1f})")
-            
-        except Exception as e:
-            logger.warning(f"Skipping img {idx}: {e}")
+            logger.info(f"Img {idx+1}: Final={final_score:.1f} (CLIP={clip_score:.1f}, Edges={edge_val:.1f})")
+        except: continue
 
+    # 4. Сортировка и сохранение
     candidates.sort(key=lambda x: x["score"], reverse=True)
-    top_candidates = candidates[:4]
-    top_candidates.sort(key=lambda x: x["original_idx"])
+    top_candidates = sorted(candidates[:4], key=lambda x: x["original_idx"])
     
     variant_previews = {}
     variant_full_urls = {}
-    
     for cand in top_candidates:
         v_key = f"v_{cand['original_idx']}"
-        fname = f"prev_{temp_id}_{v_key}.jpg"
-        url = save_image(fname, cand['preview_bytes'])
-        
+        url = save_image(f"prev_{temp_id}_{v_key}.jpg", cand['preview_bytes'])
         variant_previews[v_key] = url
         variant_full_urls[v_key] = cand['original_url']
-
-    if not variant_previews:
-         raise HTTPException(400, "Не удалось обработать изображения.")
 
     VARIANTS_STORAGE[temp_id] = {
         "image_urls": variant_full_urls,
@@ -392,13 +335,9 @@ async def add_marketplace_with_variants(
         "created_at": datetime.utcnow()
     }
     
-    # Отдаем чистое название на фронтенд
-    display_name = full_title if full_title else "Новая вещь"
-    if len(display_name) > 60: display_name = display_name[:57] + "..."
-
     return {
         "temp_id": temp_id,
-        "suggested_name": display_name,
+        "suggested_name": full_title[:60] if full_title else "Новая вещь",
         "variants": variant_previews,
         "total_images": len(variant_previews)
     }
@@ -461,6 +400,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
