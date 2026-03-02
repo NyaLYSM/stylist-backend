@@ -16,12 +16,11 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# Попытка импорта CLIP
+# Интеграция с CLIP
 CLIP_AVAILABLE = False
 try:
     from utils.clip_client import rate_image_relevance
     CLIP_AVAILABLE = True
-    logger.info("✅ CLIP client ready for filtering")
 except ImportError:
     def rate_image_relevance(img, name): return 100.0
 
@@ -39,6 +38,7 @@ class SelectVariantPayload(BaseModel):
 VARIANTS_STORAGE = {}
 
 def get_wb_basket(vol: int) -> str:
+    """Динамическое определение корзины WB для новых артикулов"""
     if 0 <= vol <= 143: return "01"
     elif 144 <= vol <= 287: return "02"
     elif 288 <= vol <= 431: return "03"
@@ -54,127 +54,126 @@ def get_wb_basket(vol: int) -> str:
     elif 1920 <= vol <= 2045: return "13"
     elif 2046 <= vol <= 2189: return "14"
     elif 2190 <= vol <= 2405: return "15"
-    else: return "16"
+    elif 2406 <= vol <= 2621: return "16"
+    elif 2622 <= vol <= 2837: return "17"
+    elif 2838 <= vol <= 3053: return "18"
+    elif 3054 <= vol <= 3269: return "19"
+    elif 3270 <= vol <= 3485: return "20"
+    else: return "21" # Фолбек для очень высоких ID
 
 def parse_wildberries(url: str):
     match = re.search(r'catalog/(\d+)', url)
     if not match: return [], "Товар WB"
     nm_id = int(match.group(1))
     
-    # 1. Пытаемся достать нормальное название через API
     title = ""
+    # 1. Тянем метаданные через API (Бренд + Название)
     try:
-        # Пробуем API карточки (более надежное для названия)
-        info_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
-        r = crequests.get(info_url, impersonate="chrome120", timeout=5)
+        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
+        r = crequests.get(api_url, impersonate="chrome120", timeout=5)
         if r.status_code == 200:
-            data = r.json().get('data', {}).get('products', [])
-            if data:
-                p = data[0]
+            p_data = r.json().get('data', {}).get('products', [])
+            if p_data:
+                p = p_data[0]
                 brand = p.get('brand', '')
-                product_name = p.get('name', '')
-                title = f"{brand} / {product_name}".strip(" / ")
+                p_name = p.get('name', '')
+                title = f"{brand} {p_name}".strip()
     except Exception as e:
-        logger.warning(f"WB API fail: {e}")
+        logger.warning(f"WB API Title failed: {e}")
 
-    # 2. Если API подвело, идем в HTML за <h1>
+    # 2. Если API молчит, парсим HTML глубоко
     if not title or title.lower() == "одежда":
         try:
             r_html = crequests.get(url, impersonate="chrome120", timeout=5)
             soup = BeautifulSoup(r_html.text, 'html.parser')
-            h1 = soup.find('h1')
+            # Ищем заголовок в разных тегах, которые использует WB
+            h1 = soup.find('h1', class_='product-page__title') or soup.find('h1')
             if h1: title = h1.get_text(strip=True)
         except: pass
 
     if not title: title = "Вещь из Wildberries"
 
-    # 3. Формируем ссылки на картинки
+    # 3. Сборка URL картинок
     vol = nm_id // 100000
     part = nm_id // 1000
     basket = get_wb_basket(vol)
     host = f"basket-{basket}.wbbasket.ru"
     
-    # Берем до 10 фото для анализа
+    # Собираем до 10 фото для выбора лучших
     image_urls = [f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp" for i in range(1, 11)]
     return image_urls, title
 
-def process_single_image(idx, url, target_name):
-    """Функция для параллельного выполнения: загрузка + сжатие + CLIP"""
+def download_and_process_img(idx, url):
+    """Параллельный воркер: загрузка + сжатие 336x336 + CLIP"""
     try:
-        resp = requests.get(url, timeout=7)
+        resp = requests.get(url, timeout=8)
         if resp.status_code != 200: return None
         
         img = Image.open(BytesIO(resp.content)).convert("RGB")
         
-        # Сжатие до 336x336 для скорости и CLIP
-        img_preview = img.copy()
-        img_preview.thumbnail((336, 336))
+        # Сразу сжимаем до 336x336 для превью и CLIP
+        img.thumbnail((336, 336))
         
-        # Фильтрация мусора через CLIP
-        score = rate_image_relevance(img_preview, "clothing, fashion item")
-        if score < 25: # Порог отсечения таблиц размеров и текста
-            logger.info(f"🗑️ Img {idx} rejected (Score {score:.1f})")
+        # Проверка CLIP на наличие одежды (исключаем текст и таблицы)
+        score = rate_image_relevance(img, "clothing photography, high quality fashion")
+        
+        if score < 25: # Порог отсева мусора
+            logger.info(f"🚫 Img {idx} rejected (Score: {score:.1f})")
             return None
 
-        # Сохранение временного превью
         out = BytesIO()
-        img_preview.save(out, format="JPEG", quality=80)
+        img.save(out, format="JPEG", quality=85)
+        
         return {
-            "id": f"v_{idx}",
-            "full_url": url,
+            "key": f"v_{idx}",
+            "original_url": url,
             "preview_bytes": out.getvalue(),
             "score": score
         }
-    except Exception as e:
-        return None
+    except: return None
 
 @router.post("/add-marketplace-with-variants")
 async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = Depends(get_current_user_id)):
-    if "wildberries" in payload.url or "wb.ru" in payload.url:
-        image_urls, suggested_title = parse_wildberries(payload.url)
-    else:
+    if "wildberries" not in payload.url and "wb.ru" not in payload.url:
         raise HTTPException(400, "Поддерживается только Wildberries")
 
+    image_urls, suggested_title = parse_wildberries(payload.url)
     if not image_urls:
-        raise HTTPException(400, "Изображения не найдены")
+        raise HTTPException(400, "Не удалось найти изображения товара")
 
-    # Использование названия от пользователя, если оно введено, иначе - найденное
-    final_title = payload.name if payload.name.strip() else suggested_title
+    # Название от пользователя или распарсенное
+    final_name = payload.name if payload.name.strip() else suggested_title
 
-    # Параллельная обработка картинок
+    # ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА
     results = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = [executor.submit(process_single_image, i, url, "clothing") for i, url in enumerate(image_urls)]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(download_and_process_img, i, url) for i, url in enumerate(image_urls)]
         for f in futures:
             res = f.result()
             if res: results.append(res)
 
     if not results:
-        raise HTTPException(400, "Не найдено подходящих фото одежды (возможно, только таблицы размеров)")
+        raise HTTPException(400, "Не найдено подходящих фото (возможно, только таблицы размеров)")
 
-    # Сортируем по релевантности CLIP
+    # Сортируем: лучшие по мнению CLIP — вперед
     results.sort(key=lambda x: x["score"], reverse=True)
-    
+
     temp_id = uuid.uuid4().hex
     previews = {}
     full_urls = {}
 
-    for res in results[:6]: # Берем топ-6 лучших фото
-        v_key = res["id"]
-        saved_url = save_image(f"temp_{temp_id}_{v_key}.jpg", res["preview_bytes"])
+    for item in results[:6]: # Показываем только топ-6
+        v_key = item["key"]
+        saved_url = save_image(f"temp_{temp_id}_{v_key}.jpg", item["preview_bytes"])
         previews[v_key] = saved_url
-        full_urls[v_key] = res["full_url"]
+        full_urls[v_key] = item["original_url"]
 
-    VARIANTS_STORAGE[temp_id] = {
-        "urls": full_urls, 
-        "previews": previews, 
-        "user_id": user_id
-    }
+    VARIANTS_STORAGE[temp_id] = {"urls": full_urls, "previews": previews, "user_id": user_id}
 
     return {
-        "temp_id": temp_id, 
-        "suggested_name": final_title[:60], 
-        "variants": previews, 
+        "temp_id": temp_id,
+        "suggested_name": final_name[:70],
+        "variants": previews,
         "total_images": len(previews)
     }
 
@@ -182,26 +181,23 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
 async def select_variant(payload: SelectVariantPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     data = VARIANTS_STORAGE.get(payload.temp_id)
     if not data or data["user_id"] != user_id:
-        raise HTTPException(404, "Сессия истекла или не найдена")
+        raise HTTPException(404, "Сессия устарела")
     
     original_url = data["urls"].get(payload.selected_variant)
-    if not original_url:
-        raise HTTPException(400, "Вариант не найден")
-
-    # Скачиваем оригинал в лучшем качестве
+    
+    # Скачиваем оригинал для финального сохранения
     resp = requests.get(original_url, timeout=15)
     img = Image.open(BytesIO(resp.content)).convert("RGB")
+    img.thumbnail((1024, 1024)) # Финальный размер в гардеробе
     
-    # Финальное сохранение (можно чуть больше размер)
-    img.thumbnail((1024, 1024))
     out = BytesIO()
     img.save(out, format="JPEG", quality=90)
     
     final_url = save_image(f"item_{uuid.uuid4().hex}.jpg", out.getvalue())
     
-    # Чистим временные файлы
-    for p in data["previews"].values():
-        try: delete_image(p)
+    # Чистка временных файлов
+    for p_url in data["previews"].values():
+        try: delete_image(p_url)
         except: pass
     del VARIANTS_STORAGE[payload.temp_id]
 
@@ -209,17 +205,14 @@ async def select_variant(payload: SelectVariantPayload, db: Session = Depends(ge
         user_id=user_id, 
         name=payload.name, 
         image_url=final_url, 
-        item_type="marketplace",
-        created_at=datetime.utcnow()
+        item_type="marketplace"
     )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
+    db.add(item); db.commit(); db.refresh(item)
     return item
 
 @router.get("/items")
 def get_items(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    return db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).order_by(WardrobeItem.created_at.desc()).all()
+    return db.query(WardrobeItem).filter(WardrobeItem.user_id == user_id).order_by(WardrobeItem.id.desc()).all()
 
 @router.delete("/delete")
 def delete_item(payload: dict, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
@@ -227,6 +220,5 @@ def delete_item(payload: dict, db: Session = Depends(get_db), user_id: int = Dep
     item = db.query(WardrobeItem).filter(WardrobeItem.id == item_id, WardrobeItem.user_id == user_id).first()
     if item:
         delete_image(item.image_url)
-        db.delete(item)
-        db.commit()
+        db.delete(item); db.commit()
     return {"status": "ok"}
