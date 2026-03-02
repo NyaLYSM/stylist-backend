@@ -120,6 +120,25 @@ def analyze_image_score(img: Image.Image, index: int, total_images: int) -> floa
 
 # --- MARKETPLACE PARSERS (SYNCHRONOUS) ---
 
+def get_wb_basket(vol: int) -> str:
+    """Определяет номер корзины Wildberries на основе volume ID"""
+    if 0 <= vol <= 143: return "01"
+    elif 144 <= vol <= 287: return "02"
+    elif 288 <= vol <= 431: return "03"
+    elif 432 <= vol <= 719: return "04"
+    elif 720 <= vol <= 1007: return "05"
+    elif 1008 <= vol <= 1061: return "06"
+    elif 1062 <= vol <= 1115: return "07"
+    elif 1116 <= vol <= 1169: return "08"
+    elif 1170 <= vol <= 1313: return "09"
+    elif 1314 <= vol <= 1601: return "10"
+    elif 1602 <= vol <= 1655: return "11"
+    elif 1656 <= vol <= 1919: return "12"
+    elif 1920 <= vol <= 2045: return "13"
+    elif 2046 <= vol <= 2189: return "14"
+    elif 2190 <= vol <= 2405: return "15"
+    else: return "16"
+
 def parse_wildberries(url: str, logger) -> tuple[list, str]:
     image_urls = []
     title = None
@@ -400,6 +419,7 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user_id: int = Depe
     except: pass
     db.delete(item); db.commit()
     return {"status": "success"}
+
 
 
 
