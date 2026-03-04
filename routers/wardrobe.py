@@ -78,52 +78,78 @@ def parse_wildberries(url: str):
     nm_id = int(match.group(1))
     
     title = ""
-    # Прямой запрос к API метаданных WB
+    # 1. Сначала пробуем API (Быстро, но WB может блокировать)
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
-        r = crequests.get(api_url, impersonate="chrome120", timeout=5)
+        r = crequests.get(api_url, impersonate="chrome120", timeout=4)
         if r.status_code == 200:
             data = r.json().get('data', {}).get('products', [])
             if data:
-                p = data[0]
-                title = f"{p.get('brand', '')} {p.get('name', '')}".strip()
-    except Exception as e:
-        logger.error(f"WB API error: {e}")
+                title = f"{data[0].get('brand', '')} {data[0].get('name', '')}".strip()
+    except: pass
+
+    # 2. Бронебойный парсинг HTML (SEO-теги для репостов)
+    if not title or title.lower() == "одежда":
+        try:
+            r_html = crequests.get(url, impersonate="chrome120", timeout=5)
+            soup = BeautifulSoup(r_html.text, 'html.parser')
+            
+            # Ищем OpenGraph тег (он есть всегда для репостов в соцсетях)
+            og_title = soup.find('meta', property='og:title')
+            if og_title and og_title.get('content'):
+                title = og_title.get('content')
+            else:
+                title_tag = soup.find('title')
+                if title_tag: title = title_tag.get_text(strip=True)
+            
+            # Очищаем название от рекламного мусора
+            if title:
+                title = re.sub(r' — купить.*', '', title, flags=re.IGNORECASE)
+                title = title.replace('Wildberries', '').replace('Интернет-магазин', '').strip(' -—,')
+        except Exception as e:
+            logger.error(f"HTML parse error: {e}")
+
+    if not title or len(title) < 2: 
+        title = "Вещь из Wildberries"
 
     vol = nm_id // 100000
     part = nm_id // 1000
     basket = get_wb_basket(vol)
     host = f"basket-{basket}.wbbasket.ru"
     
-    # Генерируем до 12 фото (новые товары часто имеют много фото)
+    # Берем до 12 фото (на новых товарах их часто много)
     image_urls = [f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp" for i in range(1, 13)]
-    return image_urls, title or "Вещь Wildberries"
+    return image_urls, title
 
 def process_single_image(idx, url, item_name):
-    """Качественная фильтрация фото"""
+    """Качественная фильтрация фото с жестким отсевом инфографики"""
     try:
-        resp = crequests.get(url, impersonate="chrome120", timeout=10)
+        resp = crequests.get(url, impersonate="chrome120", timeout=8)
         if resp.status_code != 200: return None
         
         img = Image.open(BytesIO(resp.content)).convert("RGB")
         
-        # 1. Детекция "замусоренности" (текст, таблицы, инфографика)
-        # На фото с текстом очень много мелких деталей
+        # 1. Жесткий детектор текста и таблиц (Инфографика)
         img_gray = img.convert("L")
         edges = img_gray.filter(ImageFilter.FIND_EDGES)
-        stat = ImageStat.Stat(edges).mean[0] 
+        edge_density = ImageStat.Stat(edges).mean[0]
         
-        # Если stat > 40-50, значит на фото слишком много резких линий (вероятно текст)
-        if stat > 48:
-            logger.info(f"🚫 Скип: фото {idx} слишком зашумлено (текст/таблица)")
+        # Снизили порог с 48 до 35. Любое фото с таблицей размеров улетит в мусор.
+        if edge_density > 35:
+            logger.info(f"🚫 Скип: фото {idx} - много текста/линий (Edges: {edge_density:.1f})")
             return None
 
-        # 2. Оценка CLIP
+        # 2. Оценка нейросетью CLIP
         preview = img.copy()
-        preview.thumbnail((400, 400))
-        score = rate_image_relevance(preview, item_name or "clothing")
+        preview.thumbnail((336, 336))
+        # Передаем чистое название, чтобы CLIP понимал, что ищет
+        score = rate_image_relevance(preview, item_name or "clothing photography without text")
         
-        # 3. Сохранение
+        # Повысили минимальный порог
+        if CLIP_AVAILABLE and score < 28:
+            logger.info(f"🚫 Скип: фото {idx} - не одежда (CLIP: {score:.1f})")
+            return None
+            
         out = BytesIO()
         preview.save(out, format="JPEG", quality=85)
         
@@ -132,9 +158,9 @@ def process_single_image(idx, url, item_name):
             "url": url,
             "data": out.getvalue(),
             "score": score,
-            "is_primary": idx <= 2 # Помечаем первые фото как приоритетные
+            "is_primary": idx <= 2 # Первые фото в WB обычно лучшие
         }
-    except:
+    except Exception as e:
         return None
 
 @router.post("/add-marketplace-with-variants")
@@ -201,3 +227,4 @@ async def select_variant(payload: SelectVariantPayload, db: Session = Depends(ge
     )
     db.add(item); db.commit(); db.refresh(item)
     return item
+
