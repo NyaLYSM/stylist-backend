@@ -5,11 +5,10 @@ from PIL import Image, ImageFilter, ImageStat
 from concurrent.futures import ThreadPoolExecutor
 from curl_cffi import requests as crequests
 
-# Исправленный блок импорта парсера
 try:
     from bs4 import BeautifulSoup
 except ImportError:
-    logger.error("❌ Критическая ошибка: beautifulsoup4 не установлен!")
+    pass
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -27,9 +26,9 @@ CLIP_AVAILABLE = False
 try:
     from utils.clip_client import rate_image_relevance
     CLIP_AVAILABLE = True
-    logger.info("✅ CLIP module loaded and ready")
+    logger.info("✅ CLIP module loaded")
 except ImportError:
-    logger.warning("⚠️ CLIP not found. Using dummy scoring.")
+    logger.warning("⚠️ CLIP not found. Using dummy scores.")
     def rate_image_relevance(img, name): return 50.0
 
 router = APIRouter(tags=["Wardrobe"])
@@ -45,37 +44,39 @@ class SelectVariantPayload(BaseModel):
 
 VARIANTS_STORAGE = {}
 
-def get_wb_basket(vol: int) -> str:
-    if vol < 144: return "01"
-    if vol < 288: return "02"
-    if vol < 432: return "03"
-    if vol < 720: return "04"
-    if vol < 1008: return "05"
-    if vol < 1062: return "06"
-    if vol < 1116: return "07"
-    if vol < 1170: return "08"
-    if vol < 1314: return "09"
-    if vol < 1602: return "10"
-    if vol < 1656: return "11"
-    if vol < 1920: return "12"
-    if vol < 2046: return "13"
-    return "14"
+def get_wb_basket(nm_id: int) -> str:
+    """Актуальная логика корзин Wildberries (2024-2025)"""
+    vol = nm_id // 100000
+    if vol <= 143: return "01"
+    if vol <= 287: return "02"
+    if vol <= 431: return "03"
+    if vol <= 719: return "04"
+    if vol <= 1007: return "05"
+    if vol <= 1061: return "06"
+    if vol <= 1115: return "07"
+    if vol <= 1169: return "08"
+    if vol <= 1313: return "09"
+    if vol <= 1601: return "10"
+    if vol <= 1655: return "11"
+    if vol <= 1919: return "12"
+    if vol <= 2045: return "13"
+    if vol <= 2189: return "14"
+    if vol <= 2405: return "15"
+    if vol <= 2621: return "16"
+    if vol <= 2837: return "17"
+    if vol <= 3053: return "18"
+    if vol <= 3269: return "19"
+    if vol <= 3485: return "20"
+    return "21"
 
 def extract_smart_category(title: str) -> str:
-    """Очистка названия. Возвращает 'clothing', если WB отдал заглушку."""
     if not title: return "clothing"
-    
     text = title.lower()
-    # Список мусорных фраз от анти-бот систем и общих названий
-    junk = ["почти готово", "wildberries", "интернет-магазин", "одежда", "товар", "v0", "just a moment"]
-    
+    junk = ["почти готово", "wildberries", "интернет-магазин", "одежда", "v0", "just a moment", "loading"]
     if any(j in text for j in junk) or len(title) < 3:
         return "clothing"
-    
-    # Очищаем от спецсимволов и берем суть
     text = re.sub(r'[^а-яёa-z\s]', ' ', text)
-    words = text.split()
-    return " ".join(words[:3])
+    return " ".join(text.split()[:3])
 
 def parse_wildberries(url: str):
     match = re.search(r'catalog/(\d+)', url)
@@ -88,7 +89,6 @@ def parse_wildberries(url: str):
         "Referer": "https://www.wildberries.ru/"
     }
 
-    # 1. Пробуем API (обычно не выдает 'почти готово')
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
         r = crequests.get(api_url, impersonate="chrome120", headers=common_headers, timeout=5)
@@ -98,20 +98,18 @@ def parse_wildberries(url: str):
                 title = f"{data[0].get('brand', '')} {data[0].get('name', '')}".strip()
     except: pass
 
-    # 2. HTML Fallback
     if not title or "одежда" in title.lower():
         try:
             r_html = crequests.get(url, impersonate="chrome120", headers=common_headers, timeout=5)
             soup = BeautifulSoup(r_html.text, 'html.parser')
             og_title = soup.find('meta', property='og:title')
             title = og_title.get('content') if og_title else soup.title.string
-            if title:
-                title = re.sub(r' — купить.*', '', title, flags=re.I).strip()
+            if title: title = re.sub(r' — купить.*', '', title, flags=re.I).strip()
         except: pass
 
     vol = nm_id // 100000
     part = nm_id // 1000
-    basket = get_wb_basket(vol)
+    basket = get_wb_basket(nm_id)
     host = f"basket-{basket}.wbbasket.ru"
     image_urls = [f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp" for i in range(1, 10)]
     
@@ -119,33 +117,37 @@ def parse_wildberries(url: str):
 
 def process_single_image(idx, url, item_category):
     try:
-        resp = crequests.get(url, impersonate="chrome120", timeout=8)
-        if resp.status_code != 200: return None
+        resp = crequests.get(url, impersonate="chrome120", timeout=10)
+        if resp.status_code != 200:
+            logger.warning(f"❌ Фото {idx} недоступно: {resp.status_code}")
+            return None
         
         img = Image.open(BytesIO(resp.content)).convert("RGB")
         
-        # 1. Детектор инфографики (текст/края)
+        # Инфографика
         img_gray = img.convert("L")
         edges = img_gray.filter(ImageFilter.FIND_EDGES)
         edge_density = ImageStat.Stat(edges).mean[0]
-        if edge_density > 35: return None 
-
-        # 2. CLIP Scoring
+        
+        # CLIP Scoring
         preview = img.copy()
         preview.thumbnail((336, 336))
         
-        # Если категория 'clothing', используем более широкий промпт
-        if item_category == "clothing":
-            prompt = "a clear photo of a fashion clothing item, professional photography, clean background"
-            min_score = 20 # Порог чуть ниже для общего поиска
-        else:
-            prompt = f"a professional photo of {item_category}, high quality, no text"
-            min_score = 25
-            
+        # Ослабляем пороги, если мы в режиме "clothing"
+        is_fallback = (item_category == "clothing")
+        prompt = "fashion clothing item" if is_fallback else f"a professional photo of {item_category}"
+        min_score = 15.0 if is_fallback else 25.0
+        max_edges = 45 if is_fallback else 35
+
         score = rate_image_relevance(preview, prompt)
         
-        if score < min_score: return None 
-            
+        # Логируем для отладки
+        logger.info(f"📸 Фото {idx}: Score={score:.1f}, Edges={edge_density:.1f}")
+
+        # Если фото совсем плохое, но это единственное что есть - мы его все равно сохраним, 
+        # но пометим как низкоприоритетное
+        is_bad = (edge_density > max_edges or score < min_score)
+        
         out = BytesIO()
         preview.save(out, format="JPEG", quality=85)
         
@@ -154,15 +156,16 @@ def process_single_image(idx, url, item_category):
             "url": url,
             "data": out.getvalue(),
             "score": score,
+            "is_bad": is_bad,
             "idx": idx
         }
-    except: return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки фото {idx}: {e}")
+        return None
 
 @router.post("/add-marketplace-with-variants")
 async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = Depends(get_current_user_id)):
     image_urls, full_title = parse_wildberries(payload.url)
-    
-    # Теперь extract_smart_category отловит "Почти готово" и заменит на "clothing"
     item_category = extract_smart_category(full_title)
     logger.info(f"🎯 Ищем категорию: {item_category} (Оригинал: {full_title})")
 
@@ -170,19 +173,23 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
     with ThreadPoolExecutor(max_workers=5) as executor:
         tasks = [loop.run_in_executor(executor, process_single_image, i, url, item_category) 
                  for i, url in enumerate(image_urls)]
-        results = [r for r in await asyncio.gather(*tasks) if r]
+        all_results = [r for r in await asyncio.gather(*tasks) if r]
 
-    if not results:
-        # Если даже с пониженным порогом ничего не нашли
-        raise HTTPException(400, "Не удалось найти подходящие фото без инфографики")
+    if not all_results:
+        raise HTTPException(400, "Не удалось загрузить ни одного изображения товара")
 
-    results.sort(key=lambda x: x['score'], reverse=True)
+    # Сначала пробуем хорошие фото
+    good_results = [r for r in all_results if not r["is_bad"]]
+    
+    # Если хороших нет (например, везде инфографика), берем все что есть (Rescue Mode)
+    final_selection = good_results if good_results else all_results
+    final_selection.sort(key=lambda x: x['score'], reverse=True)
 
     temp_id = uuid.uuid4().hex
     previews = {}
     full_urls = {}
 
-    for item in results[:6]:
+    for item in final_selection[:6]:
         v_key = item["key"]
         saved_url = save_image(f"t_{temp_id}_{v_key}.jpg", item["data"])
         previews[v_key] = saved_url
@@ -190,7 +197,6 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
 
     VARIANTS_STORAGE[temp_id] = {"urls": full_urls, "previews": previews, "user_id": user_id}
     
-    # Если заголовок был мусором, дадим пользователю возможность ввести свое имя
     display_name = full_title[:60] if item_category != "clothing" else "Новая вещь"
     
     return {
@@ -203,7 +209,7 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
 async def select_variant(payload: SelectVariantPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     data = VARIANTS_STORAGE.get(payload.temp_id)
     if not data or data["user_id"] != user_id:
-        raise HTTPException(404, "Варианты устарели, попробуйте снова")
+        raise HTTPException(404, "Сессия истекла")
     
     orig_url = data["urls"].get(payload.selected_variant)
     r = crequests.get(orig_url, impersonate="chrome120")
