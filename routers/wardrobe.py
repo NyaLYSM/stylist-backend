@@ -43,7 +43,6 @@ class SelectVariantPayload(BaseModel):
 VARIANTS_STORAGE = {}
 
 def get_wb_basket_v2(nm_id: int) -> str:
-    """Расширенная логика корзин (до 30+)"""
     vol = nm_id // 100000
     if vol <= 143: return "01"
     if vol <= 287: return "02"
@@ -77,11 +76,8 @@ def get_wb_basket_v2(nm_id: int) -> str:
     return "30"
 
 async def find_working_basket(nm_id: int):
-    """Метод подбора живой корзины, если основная логика врет"""
     vol = nm_id // 100000
     part = nm_id // 1000
-    
-    # Сначала пробуем расчетную
     initial_basket = get_wb_basket_v2(nm_id)
     baskets_to_try = [initial_basket] + [f"{i:02d}" for i in range(1, 31) if f"{i:02d}" != initial_basket]
     
@@ -90,7 +86,7 @@ async def find_working_basket(nm_id: int):
         try:
             r = crequests.head(test_url, impersonate="chrome120", timeout=2)
             if r.status_code == 200:
-                logger.info(Found working basket: {b} for ID {nm_id}")
+                logger.info(f"✅ Found working basket: {b} for ID {nm_id}")
                 return b
         except: continue
     return initial_basket
@@ -99,8 +95,7 @@ def extract_smart_category(title: str) -> str:
     if not title: return "clothing"
     text = title.lower()
     junk = ["почти готово", "wildberries", "интернет-магазин", "одежда", "v0", "just a moment"]
-    if any(j in text for j in junk) or len(title) < 3:
-        return "clothing"
+    if any(j in text for j in junk) or len(title) < 3: return "clothing"
     return " ".join(re.sub(r'[^а-яёa-z\s]', ' ', text).split()[:3])
 
 async def parse_wildberries_v2(url: str):
@@ -109,37 +104,33 @@ async def parse_wildberries_v2(url: str):
     nm_id = int(match.group(1))
     
     title = ""
-    common_headers = {"User-Agent": "Mozilla/5.0...", "Referer": "https://www.wildberries.ru/"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": "https://www.wildberries.ru/"
+    }
 
-    # API Title Fetch
     try:
         api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
-        r = crequests.get(api_url, impersonate="chrome120", headers=common_headers, timeout=5)
+        r = crequests.get(api_url, impersonate="chrome120", headers=headers, timeout=5)
         if r.status_code == 200:
             p = r.json().get('data', {}).get('products', [])
             if p: title = f"{p[0].get('brand', '')} {p[0].get('name', '')}".strip()
     except: pass
 
-    # Basket Discovery
     basket = await find_working_basket(nm_id)
-    vol = nm_id // 100000
-    part = nm_id // 1000
+    vol, part = nm_id // 100000, nm_id // 1000
     host = f"basket-{basket}.wbbasket.ru"
-    
     image_urls = [f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp" for i in range(1, 10)]
-    logger.info(f"🔗 Проверочная ссылка: {image_urls[0]}")
     
     return image_urls, title or "Товар Wildberries"
 
 def process_single_image(idx, url, item_category):
     try:
         resp = crequests.get(url, impersonate="chrome120", timeout=10)
-        if resp.status_code != 200:
-            return None # Здесь ловим 404
+        if resp.status_code != 200: return None
         
         img = Image.open(BytesIO(resp.content)).convert("RGB")
-        img_gray = img.convert("L")
-        edge_density = ImageStat.Stat(img_gray.filter(ImageFilter.FIND_EDGES)).mean[0]
+        edge_density = ImageStat.Stat(img.convert("L").filter(ImageFilter.FIND_EDGES)).mean[0]
         
         preview = img.copy()
         preview.thumbnail((336, 336))
@@ -148,32 +139,26 @@ def process_single_image(idx, url, item_category):
         prompt = "fashion item" if is_fallback else f"a professional photo of {item_category}"
         score = rate_image_relevance(preview, prompt)
         
-        logger.info(f"📸 Фото {idx}: Score={score:.1f}, Edges={edge_density:.1f}")
-        
         is_bad = (edge_density > 45 or score < 15.0)
         out = BytesIO()
         preview.save(out, format="JPEG", quality=85)
         
         return {"key": f"v_{idx}", "url": url, "data": out.getvalue(), "score": score, "is_bad": is_bad}
-    except Exception as e:
-        return None
+    except: return None
 
 @router.post("/add-marketplace-with-variants")
 async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = Depends(get_current_user_id)):
     image_urls, full_title = await parse_wildberries_v2(payload.url)
     item_category = extract_smart_category(full_title)
-    
-    logger.info(f"🎯 Категория: {item_category} | Всего ссылок: {len(image_urls)}")
+    logger.info(f"🎯 Category: {item_category} | Links: {len(image_urls)}")
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor(max_workers=5) as executor:
-        tasks = [loop.run_in_executor(executor, process_single_image, i, url, item_category) 
-                 for i, url in enumerate(image_urls)]
+        tasks = [loop.run_in_executor(executor, process_single_image, i, url, item_category) for i, url in enumerate(image_urls)]
         all_results = [r for r in await asyncio.gather(*tasks) if r]
 
     if not all_results:
-        # Если корзина найдена, но фото не качаются
-        raise HTTPException(400, "Не удалось загрузить изображения. Возможно, Wildberries блокирует запросы.")
+        raise HTTPException(400, "Не удалось загрузить изображения. Попробуйте позже.")
 
     good_results = [r for r in all_results if not r["is_bad"]]
     final_selection = good_results if good_results else all_results
@@ -189,7 +174,7 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
         full_urls[v_key] = item["url"]
 
     VARIANTS_STORAGE[temp_id] = {"urls": full_urls, "previews": previews, "user_id": user_id}
-    return {"temp_id": temp_id, "suggested_name": full_title[:60] if item_category != "clothing" else "Новая вещь", "variants": previews}
+    return {"temp_id": temp_id, "suggested_name": full_title[:60], "variants": previews}
 
 @router.post("/select-variant")
 async def select_variant(payload: SelectVariantPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
@@ -197,9 +182,7 @@ async def select_variant(payload: SelectVariantPayload, db: Session = Depends(ge
     if not data or data["user_id"] != user_id: raise HTTPException(404, "Session expired")
     
     r = crequests.get(data["urls"].get(payload.selected_variant), impersonate="chrome120")
-    img_data = BytesIO(r.content)
-    
-    final_url = save_image(f"item_{uuid.uuid4().hex}.jpg", img_data.getvalue())
+    final_url = save_image(f"item_{uuid.uuid4().hex}.jpg", r.content)
     
     for p_url in data["previews"].values():
         try: delete_image(p_url)
