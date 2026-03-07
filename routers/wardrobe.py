@@ -76,8 +76,7 @@ def get_wb_basket_v2(nm_id: int) -> str:
     return "30"
 
 async def find_working_basket(nm_id: int):
-    vol = nm_id // 100000
-    part = nm_id // 1000
+    vol, part = nm_id // 100000, nm_id // 1000
     initial_basket = get_wb_basket_v2(nm_id)
     baskets_to_try = [initial_basket] + [f"{i:02d}" for i in range(1, 31) if f"{i:02d}" != initial_basket]
     
@@ -85,80 +84,103 @@ async def find_working_basket(nm_id: int):
         test_url = f"https://basket-{b}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
         try:
             r = crequests.head(test_url, impersonate="chrome120", timeout=2)
-            if r.status_code == 200:
-                logger.info(f"✅ Found working basket: {b} for ID {nm_id}")
-                return b
+            if r.status_code == 200: return b
         except: continue
     return initial_basket
 
-def extract_smart_category(title: str) -> str:
-    if not title: return "clothing"
-    text = title.lower()
-    junk = ["почти готово", "wildberries", "интернет-магазин", "одежда", "v0", "just a moment"]
-    if any(j in text for j in junk) or len(title) < 3: return "clothing"
-    return " ".join(re.sub(r'[^а-яёa-z\s]', ' ', text).split()[:3])
+def clean_wb_title(title: str) -> str:
+    """Очищает название от мусора WB, оставляя суть"""
+    if not title: return ""
+    # Убираем стандартные приписки
+    junk_patterns = [
+        r"почти готово\.\.\.", r"wildberries", r"интернет-магазин", 
+        r"бесплатная доставка", r"одежда", r"v0", r"обувь"
+    ]
+    res = title.lower()
+    for pattern in junk_patterns:
+        res = re.sub(pattern, "", res)
+    
+    # Очищаем от лишних знаков и пробелов
+    res = re.sub(r'[^\w\sа-яё-]', ' ', res)
+    words = res.split()
+    # Возвращаем капитализированную строку (например, "Брюки Палаццо")
+    return " ".join(words).strip().capitalize()
 
-async def parse_wildberries_v2(url: str):
+async def parse_wildberries_v3(url: str):
     match = re.search(r'catalog/(\d+)', url)
-    if not match: return [], "Товар WB"
+    if not match: return [], "Новый товар"
     nm_id = int(match.group(1))
     
     title = ""
+    # Список регионов для обхода блокировок API
+    dests = ["-1257786", "-1255800", "-121393"]
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://www.wildberries.ru/"
+        "Accept": "*/*",
+        "Referer": f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx"
     }
 
-    try:
-        api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest=-1257786&nm={nm_id}"
-        r = crequests.get(api_url, impersonate="chrome120", headers=headers, timeout=5)
-        if r.status_code == 200:
-            p = r.json().get('data', {}).get('products', [])
-            if p: title = f"{p[0].get('brand', '')} {p[0].get('name', '')}".strip()
-    except: pass
+    # Пытаемся получить имя через несколько API
+    for d in dests:
+        try:
+            api_url = f"https://card.wb.ru/cards/v2/detail?appType=1&curr=rub&dest={d}&nm={nm_id}"
+            r = crequests.get(api_url, impersonate="chrome120", headers=headers, timeout=5)
+            if r.status_code == 200:
+                p_list = r.json().get('data', {}).get('products', [])
+                if p_list:
+                    p = p_list[0]
+                    brand = p.get('brand', '')
+                    name = p.get('name', '')
+                    title = f"{brand} {name}".strip()
+                    if title: break
+        except: continue
 
+    # Очищаем полученное название
+    final_title = clean_wb_title(title) or "Товар Wildberries"
+    logger.info(f"🔎 Распознано название: {final_title}")
+
+    # Поиск картинок
     basket = await find_working_basket(nm_id)
     vol, part = nm_id // 100000, nm_id // 1000
     host = f"basket-{basket}.wbbasket.ru"
     image_urls = [f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp" for i in range(1, 10)]
     
-    return image_urls, title or "Товар Wildberries"
+    return image_urls, final_title
 
 def process_single_image(idx, url, item_category):
     try:
         resp = crequests.get(url, impersonate="chrome120", timeout=10)
         if resp.status_code != 200: return None
-        
         img = Image.open(BytesIO(resp.content)).convert("RGB")
         edge_density = ImageStat.Stat(img.convert("L").filter(ImageFilter.FIND_EDGES)).mean[0]
-        
         preview = img.copy()
         preview.thumbnail((336, 336))
         
-        is_fallback = (item_category == "clothing")
-        prompt = "fashion item" if is_fallback else f"a professional photo of {item_category}"
-        score = rate_image_relevance(preview, prompt)
+        # Если категория пустая, ищем просто одежду
+        tag = item_category if len(item_category) > 3 else "fashion item"
+        score = rate_image_relevance(preview, tag)
         
-        is_bad = (edge_density > 45 or score < 15.0)
+        is_bad = (edge_density > 45 or score < 12.0)
         out = BytesIO()
         preview.save(out, format="JPEG", quality=85)
-        
         return {"key": f"v_{idx}", "url": url, "data": out.getvalue(), "score": score, "is_bad": is_bad}
     except: return None
 
 @router.post("/add-marketplace-with-variants")
 async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = Depends(get_current_user_id)):
-    image_urls, full_title = await parse_wildberries_v2(payload.url)
-    item_category = extract_smart_category(full_title)
-    logger.info(f"🎯 Category: {item_category} | Links: {len(image_urls)}")
-
+    image_urls, full_title = await parse_wildberries_v3(payload.url)
+    
+    # Категория для нейронки (короткая)
+    ml_category = " ".join(full_title.split()[:2])
+    
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor(max_workers=5) as executor:
-        tasks = [loop.run_in_executor(executor, process_single_image, i, url, item_category) for i, url in enumerate(image_urls)]
+        tasks = [loop.run_in_executor(executor, process_single_image, i, url, ml_category) for i, url in enumerate(image_urls)]
         all_results = [r for r in await asyncio.gather(*tasks) if r]
 
     if not all_results:
-        raise HTTPException(400, "Не удалось загрузить изображения. Попробуйте позже.")
+        raise HTTPException(400, "Не удалось получить данные о товаре")
 
     good_results = [r for r in all_results if not r["is_bad"]]
     final_selection = good_results if good_results else all_results
@@ -174,7 +196,12 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
         full_urls[v_key] = item["url"]
 
     VARIANTS_STORAGE[temp_id] = {"urls": full_urls, "previews": previews, "user_id": user_id}
-    return {"temp_id": temp_id, "suggested_name": full_title[:60], "variants": previews}
+    
+    return {
+        "temp_id": temp_id, 
+        "suggested_name": full_title, 
+        "variants": previews
+    }
 
 @router.post("/select-variant")
 async def select_variant(payload: SelectVariantPayload, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
@@ -184,6 +211,7 @@ async def select_variant(payload: SelectVariantPayload, db: Session = Depends(ge
     r = crequests.get(data["urls"].get(payload.selected_variant), impersonate="chrome120")
     final_url = save_image(f"item_{uuid.uuid4().hex}.jpg", r.content)
     
+    # Удаляем временные превью
     for p_url in data["previews"].values():
         try: delete_image(p_url)
         except: pass
