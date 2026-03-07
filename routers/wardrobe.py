@@ -121,33 +121,37 @@ def parse_wildberries(url: str):
     image_urls = [f"https://{host}/vol{vol}/part{part}/{nm_id}/images/big/{i}.webp" for i in range(1, 13)]
     return image_urls, title
 
-def process_single_image(idx, url, item_name):
-    """Качественная фильтрация фото с жестким отсевом инфографики"""
+def process_single_image(idx, url, item_name): # <--- ДОБАВИЛИ item_name
+    """Строгая фильтрация изображений с учетом типа вещи"""
     try:
         resp = crequests.get(url, impersonate="chrome120", timeout=8)
         if resp.status_code != 200: return None
         
         img = Image.open(BytesIO(resp.content)).convert("RGB")
         
-        # 1. Жесткий детектор текста и таблиц (Инфографика)
+        # Жесткий детектор текста (Инфографика)
         img_gray = img.convert("L")
         edges = img_gray.filter(ImageFilter.FIND_EDGES)
         edge_density = ImageStat.Stat(edges).mean[0]
         
-        # Снизили порог с 48 до 35. Любое фото с таблицей размеров улетит в мусор.
-        if edge_density > 35:
-            logger.info(f"🚫 Скип: фото {idx} - много текста/линий (Edges: {edge_density:.1f})")
+        if edge_density > 30:
+            logger.info(f"🚫 Скип: фото {idx} - текст/инфографика (Edges: {edge_density:.1f})")
             return None
 
-        # 2. Оценка нейросетью CLIP
+        # Оценка CLIP: Динамический промпт!
         preview = img.copy()
         preview.thumbnail((336, 336))
-        # Передаем чистое название, чтобы CLIP понимал, что ищет
-        score = rate_image_relevance(preview, item_name or "clothing photography without text")
         
-        # Повысили минимальный порог
-        if CLIP_AVAILABLE and score < 28:
-            logger.info(f"🚫 Скип: фото {idx} - не одежда (CLIP: {score:.1f})")
+        # Если название нормальное, используем его. Если заглушка - берем общее.
+        search_target = item_name if item_name and "Вещь" not in item_name else "clothing item"
+        
+        # Склеиваем суть вещи с жестким запретом на текст
+        strict_prompt = f"a clear photo of {search_target}, fashion product, no text, no size chart"
+        
+        score = rate_image_relevance(preview, strict_prompt)
+        
+        if CLIP_AVAILABLE and score < 25:
+            logger.info(f"🚫 Скип: фото {idx} - не {search_target} по версии CLIP (Score: {score:.1f})")
             return None
             
         out = BytesIO()
@@ -158,7 +162,7 @@ def process_single_image(idx, url, item_name):
             "url": url,
             "data": out.getvalue(),
             "score": score,
-            "is_primary": idx <= 2 # Первые фото в WB обычно лучшие
+            "is_primary": idx <= 2
         }
     except Exception as e:
         return None
@@ -169,6 +173,7 @@ async def add_marketplace_with_variants(payload: ItemUrlPayload, user_id: int = 
     
     with ThreadPoolExecutor(max_workers=8) as executor:
         loop = asyncio.get_event_loop()
+        # Теперь мы передаем suggested_title внутрь process_single_image
         tasks = [loop.run_in_executor(executor, process_single_image, i, url, suggested_title) for i, url in enumerate(image_urls)]
         results = [r for r in await asyncio.gather(*tasks) if r]
 
@@ -227,4 +232,5 @@ async def select_variant(payload: SelectVariantPayload, db: Session = Depends(ge
     )
     db.add(item); db.commit(); db.refresh(item)
     return item
+
 
